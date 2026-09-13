@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#2f6bff">
+<meta name="theme-color" content="#4a5cff">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -200,6 +200,17 @@ nav button svg{width:22px;height:22px;}
 .st-row b{font-weight:600;}
 .st-row.ok b{color:var(--income);}
 .st-row.warn b{color:#e8a33d;}
+/* 授权提醒横幅 */
+.regrant-bar{position:fixed;left:12px;right:12px;bottom:calc(78px + env(safe-area-inset-bottom,0px));
+  background:#fff5e6;border:1.5px solid #f0c88a;border-radius:14px;padding:12px 14px;
+  display:flex;align-items:center;gap:12px;z-index:60;
+  box-shadow:0 6px 24px rgba(180,130,40,.22);}
+.regrant-bar .rb-text{flex:1;min-width:0;}
+.regrant-bar .rb-text b{display:block;font-size:14px;color:#8a5a12;margin-bottom:3px;}
+.regrant-bar .rb-text span{font-size:12px;color:#a87b3a;line-height:1.5;display:block;}
+.regrant-bar button{flex-shrink:0;background:#e8a33d;color:#fff;border:none;border-radius:10px;
+  padding:10px 16px;font-size:13.5px;font-weight:600;font-family:inherit;cursor:pointer;}
+.regrant-bar button:active{opacity:.85;}
 /* 账户详情里的流水列表 */
 .acct-tx-head{display:flex;justify-content:space-between;align-items:center;margin:6px 20px 2px;
   font-size:14px;font-weight:600;}
@@ -474,16 +485,17 @@ async function verifyPermission(handle, readWrite){
   return false;
 }
 
-/* 写入文件 */
+/* 写入文件（保留给需要静默写入的场景，会先校验权限） */
 async function writeToFile(data){
-  if(!fileHandle) return false;
+  if(!fileHandle || fileWriteBlocked) return false;
   try{
-    if(!(await verifyPermission(fileHandle, true))) return false;
+    const perm = await queryPerm(fileHandle);
+    if(perm !== 'granted'){ fileWriteBlocked = true; needRegrant = true; return false; }
     const w = await fileHandle.createWritable();
     await w.write(JSON.stringify(data,null,2));
     await w.close();
     return true;
-  }catch(e){ console.warn('写文件失败', e); return false; }
+  }catch(e){ console.warn('写文件失败', e); fileWriteBlocked = true; return false; }
 }
 
 /* 申请持久化存储（防止浏览器自动清理） */
@@ -501,64 +513,130 @@ async function requestPersistence(){
 /* 支持情况 */
 const hasFileSystem = 'showSaveFilePicker' in window;
 
+/* 数据来源标记 */
+let loadSource = '';        // 'file' | 'idb' | 'local' | 'new'
+let needRegrant = false;    // 需要用户重新授权文件
+
+/* 带超时的权限查询：queryPermission 不会弹窗，可以安全调用 */
+async function queryPerm(handle){
+  try{
+    if(!handle || !handle.queryPermission) return 'granted';
+    return await handle.queryPermission({ mode:'readwrite' });
+  }catch(e){ return 'denied'; }
+}
+
 async function loadData(){
-  // 1) 尝试固定文件
+  // 1) 固定文件
   try{
     const h = await getHandle();
     if(h){
       fileHandle = h;
-      if(await verifyPermission(h, true)){
-        const f = await h.getFile();
-        const txt = await f.text();
-        if(txt && txt.trim()){
-          const d = JSON.parse(txt);
-          if(d && d.accounts) return migrate(d);
-        }
+      const perm = await queryPerm(h);
+      if(perm === 'granted'){
+        // 有权限：正常读取
+        try{
+          const f = await h.getFile();
+          const txt = await f.text();
+          if(txt && txt.trim()){
+            const d = JSON.parse(txt);
+            if(d && Array.isArray(d.accounts)){
+              loadSource = 'file';
+              needRegrant = false;
+              return migrate(d);
+            }
+          }
+          // 文件存在但为空 → 视为新账本，但保留句柄
+          loadSource = 'file-empty';
+        }catch(e){ console.warn('读文件失败', e); }
+      } else {
+        // 没权限：标记需要重新授权，绝不写文件
+        needRegrant = true;
+        console.warn('文件权限未授予，本轮不读也不写文件');
       }
     }
   }catch(e){ console.warn('固定文件读取失败', e); }
+
   // 2) IndexedDB
   try{
     const d = await idbGet();
-    if(d){ useIDB = true; return migrate(d); }
+    if(d && Array.isArray(d.accounts)){
+      useIDB = true;
+      if(!loadSource) loadSource = 'idb';
+      return migrate(d);
+    }
   }catch(e){ console.warn('IDB 读取失败', e); }
+
   // 3) localStorage
   try{
     const raw = localStorage.getItem('mybooks_v2');
-    if(raw){ useIDB = false; return migrate(JSON.parse(raw)); }
+    if(raw){
+      const d = JSON.parse(raw);
+      if(d && Array.isArray(d.accounts)){
+        useIDB = false;
+        if(!loadSource) loadSource = 'local';
+        return migrate(d);
+      }
+    }
   }catch(e){}
+
   useIDB = false;
+  if(!loadSource) loadSource = 'new';
   return defaultData();
 }
+
 function migrate(d){
-  if(!d.accounts) d.accounts = defaultData().accounts;
-  if(!d.transactions) d.transactions = [];
+  if(!Array.isArray(d.accounts)) d.accounts = defaultData().accounts;
+  if(!Array.isArray(d.transactions)) d.transactions = [];
   if(!d.version) d.version = 1;
   // 兼容旧数据：账户缺 group
   d.accounts.forEach(a=>{ if(!a.group) a.group='cash'; if(a.quota===undefined) a.quota=null; });
   return d;
 }
+
 let saveTimer = null;
 let lastSaveState = '';   // '' | 'file' | 'idb' | 'local'
+let fileWriteBlocked = false;  // 本轮禁止写文件（权限未授予 or 数据来源可疑）
 
 async function save(immediate){
   const doSave = async ()=>{
-    // 1) 固定文件（最安全）
-    if(fileHandle){
-      const ok = await writeToFile(DB);
-      if(ok){ lastSaveState='file'; return; }
-      lastSaveState='';
+    const results = [];
+
+    // 1) 固定文件：必须同时满足「有句柄」「有权限」「未被禁止」
+    if(fileHandle && !fileWriteBlocked){
+      const perm = await queryPerm(fileHandle);
+      if(perm === 'granted'){
+        try{
+          const w = await fileHandle.createWritable();
+          await w.write(JSON.stringify(DB, null, 2));
+          await w.close();
+          results.push('file');
+          lastSaveState = 'file';
+        }catch(e){
+          console.warn('写文件失败', e);
+          fileWriteBlocked = true;   // 写一次失败就本轮不再尝试，避免反复报错
+        }
+      } else {
+        // 权限没了：立刻停止写文件（保护数据），并标记需要授权
+        fileWriteBlocked = true;
+        needRegrant = true;
+      }
     }
-    // 2) IndexedDB
+
+    // 2) IndexedDB：始终双写（作为文件的备份，也是无文件权限时的主存储）
     try{
-      if(useIDB){ await idbSet(DB); lastSaveState='idb'; return; }
-    }catch(e){ useIDB = false; }
-    // 3) localStorage
-    try{
+      await idbSet(DB);
+      useIDB = true;
+      results.push('idb');
+      if(!results.includes('file')) lastSaveState = 'idb';
+    }catch(e){
       useIDB = false;
-      localStorage.setItem('mybooks_v2', JSON.stringify(DB));
-      lastSaveState = 'local';
-    }catch(e2){ lastSaveState=''; }
+      // 3) localStorage 兜底
+      try{
+        localStorage.setItem('mybooks_v2', JSON.stringify(DB));
+        results.push('local');
+        if(!results.includes('file')) lastSaveState = 'local';
+      }catch(e2){ lastSaveState = ''; }
+    }
   };
   if(immediate) return doSave();
   clearTimeout(saveTimer);
@@ -571,18 +649,43 @@ async function chooseSaveFile(){
     toast('当前浏览器不支持固定文件存储');
     return;
   }
+  const backup = JSON.parse(JSON.stringify(DB));   // 出问题可回滚
   try{
-    fileHandle = await window.showSaveFilePicker({
+    const h = await window.showSaveFilePicker({
       suggestedName: '我的账本.json',
       types: [{ description:'账本数据文件', accept:{ 'application/json':['.json'] } }]
     });
-    // 立即写一次（句柄持久化失败也不能影响写入）
-    const wrote = await writeToFile(DB);
-    // 句柄存起来，下次打开自动恢复
-    try{ await saveHandle(fileHandle); }catch(e){ console.warn('句柄持久化失败', e); }
-    requestPersistence();          // 顺便申请持久化
+    fileHandle = h;
+    fileWriteBlocked = false;
+    needRegrant = false;
+
+    // 先看看选中的文件里有没有数据
+    let existing = null;
+    try{
+      const f = await h.getFile();
+      const txt = await f.text();
+      if(txt && txt.trim()){
+        const d = JSON.parse(txt);
+        if(d && Array.isArray(d.accounts) && d.accounts.length) existing = d;
+      }
+    }catch(e){}
+
+    // ★ 关键安全判断：如果选的文件里已有数据，而当前是空账本 → 读取文件，别覆盖
+    if(existing && (DB.accounts.length === 0 || prompt_source_is_new())){
+      DB = migrate(existing);
+      await save(true);          // 顺手同步到 IndexedDB
+      toast('已绑定文件，并从文件中恢复了 ' + DB.accounts.length + ' 个账户');
+      await renderAll();
+      await renderMore();
+      return fileHandle;
+    }
+
+    // 否则：把当前数据写进去
+    const wrote = await writeCur(DB);
+    try{ await saveHandle(h); }catch(e){ console.warn('句柄持久化失败', e); }
+    requestPersistence();
     if(wrote) toast('已绑定文件，之后记账会自动写入');
-    else toast('文件已选择，但写入失败，请重试');
+    else { toast('写入失败，已回滚'); DB = backup; }
     await renderMore();
   }catch(e){
     if(e && e.name !== 'AbortError') toast('绑定失败：' + (e.message||e));
@@ -590,17 +693,59 @@ async function chooseSaveFile(){
   return fileHandle;
 }
 
+function prompt_source_is_new(){ return loadSource === 'new'; }
+
+/* 直接写（不查权限，用于刚 picker 授权的场景） */
+async function writeCur(data){
+  try{
+    const w = await fileHandle.createWritable();
+    await w.write(JSON.stringify(data, null, 2));
+    await w.close();
+    return true;
+  }catch(e){ console.warn('写入失败', e); return false; }
+}
+
 /* 已有句柄重新授权（Chrome 重启后可能需要点一下） */
 async function reGrantFile(){
   if(!fileHandle){ return chooseSaveFile(); }
-  const ok = await verifyPermission(fileHandle, true);
-  if(ok){ toast('已重新授权'); await save(true); renderMore(); }
-  else toast('授权未通过');
+  try{
+    const perm = await fileHandle.requestPermission({ mode:'readwrite' });
+    if(perm === 'granted'){
+      fileWriteBlocked = false;
+      needRegrant = false;
+      // 重新授权后，先从文件读一遍（文件才是权威数据）
+      try{
+        const f = await fileHandle.getFile();
+        const txt = await f.text();
+        if(txt && txt.trim()){
+          const d = JSON.parse(txt);
+          if(d && Array.isArray(d.accounts) && d.accounts.length){
+            const sameAsMem = JSON.stringify(d.accounts) === JSON.stringify(DB.accounts);
+            if(!sameAsMem && DB.accounts.length <= 3){
+              // 内存里像是空账本，用文件里的数据恢复
+              DB = migrate(d);
+              toast('已从文件中恢复 ' + DB.accounts.length + ' 个账户');
+            }
+          }
+        }
+      }catch(e){ console.warn('授权后读文件失败', e); }
+      await save(true);
+      await renderAll();
+      await renderMore();
+      toast('已重新授权，自动写入已恢复');
+    } else {
+      toast('授权未通过，请再点一次');
+    }
+  }catch(e){
+    toast('授权失败：' + (e.message||e));
+  }
 }
 
 async function unbindFile(){
   await clearHandle();
   fileHandle = null;
+  fileWriteBlocked = false;
+  needRegrant = false;
   await save(true);   // 数据仍会落到 IndexedDB
   toast('已解绑文件（数据保留在本机）');
   renderMore();
@@ -1447,15 +1592,15 @@ async function renderMore(){
     btns = '';
   } else if(fileHandle){
     let granted = false;
-    try{ granted = (await fileHandle.queryPermission({mode:'readwrite'})) === 'granted'; }catch(e){}
-    head = '固定文件已开启 ✓';
+    try{ granted = (await queryPerm(fileHandle)) === 'granted'; }catch(e){}
+    head = granted ? '固定文件已开启 ✓' : '⚠️ 文件权限已过期';
     body = granted
       ? `你的数据每次记账都会<b>自动写入这个文件</b>：<br><b>${esc(fileHandle.name)}</b><br>关了浏览器、清了缓存，数据都还在文件里。`
-      : `文件是 <b>${esc(fileHandle.name)}</b>，但浏览器重启后需要你<b>点一下重新授权</b>，之后又会自动写入。`;
+      : `文件 <b>${esc(fileHandle.name)}</b> 还在，但浏览器重启后收回了写入权限。<br><b>点下面的按钮恢复即可</b>，数据不会丢。`;
     btns = granted
       ? `<button class="btn-main sec" id="btnChangeFile" style="width:100%;margin:0 0 10px;">更换保存文件</button>
          <button class="btn-main sec" id="btnUnbind" style="width:100%;margin:0;">关闭自动写文件</button>`
-      : `<button class="btn-main" id="btnGrant" style="width:100%;margin:0 0 10px;">点此重新授权（恢复自动写入）</button>
+      : `<button class="btn-main" id="btnGrant" style="width:100%;margin:0 0 10px;">恢复文件写入权限</button>
          <button class="btn-main sec" id="btnChangeFile" style="width:100%;margin:0;">更换保存文件</button>`;
   } else {
     head = '开启固定文件存储';
@@ -1467,14 +1612,27 @@ async function renderMore(){
     ? `<div class="st-row ok"><span>缓存保护</span><b>已开启 ✓</b></div>`
     : `<div class="st-row warn"><span>缓存保护</span><b>未开启</b></div>`;
 
+  // 数据来源（帮助定位问题）
+  const srcMap = { 'file':'固定文件', 'file-empty':'固定文件（空）', 'idb':'浏览器本地库', 'local':'临时存储', 'new':'全新账本' };
+  const srcTxt = srcMap[loadSource] || '未知';
+  const srcOk = loadSource === 'file' || loadSource === 'idb';
+  const warnRow = needRegrant
+    ? `<div class="st-row warn"><span>写入状态</span><b>已暂停（待授权）</b></div>`
+    : `<div class="st-row ok"><span>写入状态</span><b>正常 ✓</b></div>`;
+
   box.innerHTML = `
     <div class="st-head">${head}</div>
     <div class="st-body">${body}</div>
     <div style="margin:12px 0;">${btns}</div>
     <div class="st-list">
-      <div class="st-row ${fileHandle?'ok':''}"><span>${fileHandle?'固定文件':'固定文件'}</span><b>${fileHandle?'已绑定':'未开启'}</b></div>
+      <div class="st-row ${fileHandle?'ok':''}"><span>固定文件</span><b>${fileHandle?'已绑定':'未开启'}</b></div>
       <div class="st-row ok"><span>浏览器本地库</span><b>自动 ✓</b></div>
+      <div class="st-row ${srcOk?'ok':'warn'}"><span>本次数据来自</span><b>${srcTxt}</b></div>
+      ${warnRow}
       ${pRow}
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-top:10px;line-height:1.6;">
+      账户 ${DB.accounts.length} 个 · 流水 ${DB.transactions.length} 笔
     </div>
     ${!persisted ? `<button class="btn-main sec" id="btnPersist" style="width:100%;margin:12px 0 0;">申请缓存保护</button>`:''}
   `;
@@ -1614,56 +1772,86 @@ $('btnClear').onclick = ()=> confirmSheet('清空所有数据？','所有账户�
 });
 
 /* ---------- PWA：图标 + 可安装 ---------- */
-function setupPWA(){
-  // 1) 生成一个高质量 PNG 图标（用 canvas 绘制，避免 SVG 转 PNG 的兼容问题）
-  const size = 512;
+/* 统一绘制应用图标。size 为画布边长，pad 为内容安全内边距比例
+   （maskable 图标需要四周留白，避免被启动器裁掉） */
+function drawAppIcon(g, size, pad){
+  pad = pad || 0;
+  const S = size;
+  const inset = S * pad;
+  const box = S - inset * 2;          // 图标实体边长
+  const x0 = inset, y0 = inset;
+  const r = box * 0.235;
+
+  const rr = (x,y,w,h,rad)=>{
+    g.beginPath();
+    if(g.roundRect) g.roundRect(x,y,w,h,rad);
+    else { g.moveTo(x+rad,y); g.arcTo(x+w,y,x+w,y+h,rad); g.arcTo(x+w,y+h,x,y+h,rad);
+           g.arcTo(x,y+h,x,y,rad); g.arcTo(x,y,x+w,y,rad); }
+    g.closePath();
+  };
+
+  // 1) 蓝 → 紫 对角线渐变底
+  const grad = g.createLinearGradient(x0, y0, x0+box, y0+box);
+  grad.addColorStop(0,   '#5b8cff');
+  grad.addColorStop(0.42,'#4a5cff');
+  grad.addColorStop(1,   '#9140ee');
+  g.fillStyle = grad;
+  rr(x0, y0, box, box, r); g.fill();
+
+  // 2) 右上柔光，制造纵深
+  const gl = g.createRadialGradient(
+    x0+box*0.74, y0+box*0.2, 0,
+    x0+box*0.74, y0+box*0.2, box*0.52
+  );
+  gl.addColorStop(0,'rgba(255,255,255,0.24)');
+  gl.addColorStop(1,'rgba(255,255,255,0)');
+  g.fillStyle = gl;
+  rr(x0, y0, box, box, r); g.fill();
+
+  // 3) ¥ 符号（带轻微投影，增加立体感）
+  const cx = x0 + box/2, cy = y0 + box*0.535;
+  const fs = box * 0.475;
+  g.font = 'bold ' + fs + 'px "Noto Sans CJK SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillStyle = 'rgba(8,20,60,0.22)';
+  g.fillText('¥', cx + fs*0.03, cy + fs*0.075);
+  g.fillStyle = '#ffffff';
+  g.fillText('¥', cx, cy);
+
+  return g;
+}
+
+function iconDataURL(size, pad){
   const c = document.createElement('canvas');
   c.width = c.height = size;
-  const g = c.getContext('2d');
-  const r = 112;
-  // 渐变底
-  const grad = g.createLinearGradient(0,0,size,size);
-  grad.addColorStop(0,'#4a86ff'); grad.addColorStop(1,'#2f6bff');
-  g.fillStyle = grad;
-  g.beginPath();
-  if(g.roundRect) g.roundRect(0,0,size,size,r);
-  else { g.moveTo(r,0); g.arcTo(size,0,size,size,r); g.arcTo(size,size,0,size,r); g.arcTo(0,size,0,0,r); g.arcTo(0,0,size,0,r); }
-  g.fill();
-  // 白色账本
-  g.fillStyle = '#ffffff';
-  g.beginPath();
-  if(g.roundRect) g.roundRect(128,112,256,288,28); else g.rect(128,112,256,288);
-  g.fill();
-  // 三条线
-  g.strokeStyle = '#2f6bff'; g.globalAlpha = 0.85;
-  g.lineWidth = 20; g.lineCap = 'round';
-  [[192,336],[256,336],[320,272]].forEach(([y,x2])=>{ g.beginPath(); g.moveTo(176,y); g.lineTo(x2,y); g.stroke(); });
-  g.globalAlpha = 1;
-  // 红色圆 + ¥
-  g.fillStyle = '#ff5a5f';
-  g.beginPath(); g.arc(352,336,76,0,Math.PI*2); g.fill();
-  g.fillStyle = '#ffffff';
-  g.font = 'bold 104px -apple-system,system-ui,sans-serif';
-  g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillText('¥', 352, 340);
+  drawAppIcon(c.getContext('2d'), size, pad);
+  return c.toDataURL('image/png');
+}
 
-  const png = c.toDataURL('image/png');
-  // 页面图标也换成 PNG，更清晰
+function setupPWA(){
+  // 常规图标（铺满，圆角自带）
+  const png = iconDataURL(512, 0);
+  // maskable 图标（留 12% 安全边距，避免被启动器裁切）
+  const pngMask = iconDataURL(512, 0.12);
+  // favicon 小尺寸，用 192 更轻
+  const pngSmall = iconDataURL(192, 0);
+
   try{
-    const f = document.getElementById('appIcon'); if(f) f.href = png;
+    const f = document.getElementById('appIcon'); if(f) f.href = pngSmall;
     const a = document.getElementById('appleIcon'); if(a) a.href = png;
   }catch(e){}
 
-  // 2) 运行时生成 manifest（保持单文件，不依赖外部文件）
+  // 运行时生成 manifest（保持单文件，不依赖外部文件）
   const manifest = {
     name:'我的账本', short_name:'账本',
     start_url:'.', scope:'.',
     display:'standalone',
-    background_color:'#f4f5f7', theme_color:'#2f6bff',
+    background_color:'#f4f5f7', theme_color:'#4a5cff',
     orientation:'portrait',
     icons:[
-      { src: png, sizes:'512x512', type:'image/png', purpose:'any' },
-      { src: png, sizes:'512x512', type:'image/png', purpose:'maskable' }
+      { src: png,     sizes:'512x512', type:'image/png', purpose:'any' },
+      { src: png,     sizes:'512x512', type:'image/png', purpose:'monochrome' },
+      { src: pngMask, sizes:'512x512', type:'image/png', purpose:'maskable' }
     ]
   };
   try{
@@ -1685,10 +1873,46 @@ function setupPWA(){
   setupPWA();
   DB = await loadData();
   requestPersistence();          // 静默申请缓存保护，不弹窗
-  await save(true).catch(()=>{});
+
+  // ★ 安全写入判断：
+  //   只有「确实读到了数据」或「确实是全新用户」才允许启动时写入。
+  //   如果文件存在但没拿到权限 → 绝不能写（否则会用空数据覆盖文件）。
+  const safeToSave = !needRegrant && loadSource !== '';
+  if(safeToSave){
+    await save(true).catch(()=>{});
+  }
+
   await renderAll();
-  if(!DB.accounts.length) toast('点"账户"添加你的第一个账户');
+
+  // ★ 需要重新授权时，明确提示用户，并给出入口
+  if(needRegrant){
+    setTimeout(()=> showRegrantBanner(), 400);
+    toast('文件权限已过期，请点"恢复写入"');
+  } else if(loadSource === 'new' && DB.accounts.length === 0){
+    toast('点"账户"添加你的第一个账户');
+  }
 })();
+
+/* 授权提醒横幅 */
+function showRegrantBanner(){
+  if(document.getElementById('regrantBar')) return;
+  const bar = document.createElement('div');
+  bar.id = 'regrantBar';
+  bar.className = 'regrant-bar';
+  bar.innerHTML = `
+    <div class="rb-text">
+      <b>需要恢复文件写入权限</b>
+      <span>你的账本文件还在，点一下即可恢复自动保存</span>
+    </div>
+    <button id="rbBtn">恢复写入</button>
+  `;
+  document.body.appendChild(bar);
+  document.getElementById('rbBtn').onclick = async ()=>{
+    await reGrantFile();
+    const b = document.getElementById('regrantBar');
+    if(b && !needRegrant) b.remove();
+  };
+}
 </script>
 </body>
 </html>
