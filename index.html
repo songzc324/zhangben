@@ -1017,31 +1017,73 @@ function acctTxRow(t, acctId){
 /* ---------- 流水详情 ---------- */
 function txDetail(id){
   const t = DB.transactions.find(x=>x.id===id); if(!t) return;
-  let rows = '';
-  if(t.type==='transfer'){
-    rows = `
-      <div class="field"><label>转出账户</label><input readonly value="${esc((acctById(t.accountId)||{}).name||'')}"></div>
-      <div class="field"><label>转入账户</label><input readonly value="${esc((acctById(t.toAccountId)||{}).name||'')}"></div>`;
-  } else if(t.type==='adjust'){
-    rows = `<div class="field"><label>调整账户</label><input readonly value="${esc((acctById(t.accountId)||{}).name||'')}"></div>
-            <div class="field"><label>调整金额</label><input readonly value="${fmtS(t.amount)}"></div>`;
-  } else {
-    rows = `
-      <div class="field"><label>类型</label><input readonly value="${t.type==='expense'?'支出':'收入'}"></div>
-      <div class="field"><label>分类</label><input readonly value="${esc(t.cat)}"></div>
-      <div class="field"><label>账户</label><input readonly value="${esc(t.accountName||'')}"></div>`;
+
+  const bindDel = ()=>{ $('delTx').onclick = ()=> confirmSheet('确认删除？','删除后账户余额会自动回滚。', ()=>{
+    DB.transactions = DB.transactions.filter(x=>x.id!==id);
+    save(true); closeSheet(); renderAll(); toast('已删除');
+  }); };
+
+  /* 转账 / 余额调整：涉及两个账户或特殊语义，暂不支持编辑，仅可查看与删除 */
+  if(t.type==='transfer' || t.type==='adjust'){
+    const rows = t.type==='transfer'
+      ? `<div class="field"><label>转出账户</label><input readonly value="${esc((acctById(t.accountId)||{}).name||'')}"></div>
+         <div class="field"><label>转入账户</label><input readonly value="${esc((acctById(t.toAccountId)||{}).name||'')}"></div>`
+      : `<div class="field"><label>调整账户</label><input readonly value="${esc((acctById(t.accountId)||{}).name||'')}"></div>
+         <div class="field"><label>调整金额</label><input readonly value="${fmtS(t.amount)}"></div>`;
+    openSheet(`明细`, `
+      ${rows}
+      <div class="field"><label>日期</label><input readonly value="${t.date}"></div>
+      <div class="field"><label>金额</label><input readonly value="${fmt(t.amount)}" style="color:var(--primary)"></div>
+      ${t.note?`<div class="field"><label>备注</label><input readonly id="viewNote" value="${esc(t.note)}"></div>`:''}
+      <div style="font-size:12px;color:var(--muted);margin:2px 20px 12px;line-height:1.6;">转账和余额调整暂不支持编辑 —— 需要改动请删除后重记。</div>
+      <button class="btn-main danger" id="delTx">删除这笔记录</button>
+    `, bindDel);
+    return;
   }
-  openSheet(`明细`, `
-    ${rows}
-    <div class="field"><label>日期</label><input readonly value="${t.date}"></div>
-    <div class="field"><label>金额</label><input readonly value="${fmt(t.amount)}" style="color:${t.type==='income'?'var(--income)':t.type==='expense'?'var(--expense)':'var(--primary)'}"></div>
-    ${t.note?`<div class="field"><label>备注</label><input readonly value="${esc(t.note)}"></div>`:''}
-    <button class="btn-main danger" id="delTx">删除这笔记录</button>
+
+  /* 支出 / 收入：金额、分类、账户、日期、备注 均可修改。
+     金额框支持算式（如 30-25），便于把记错的钱改成实际金额。 */
+  let edCat = t.cat;
+  const cats = (t.type==='income' ? INCOME_CATS : EXPENSE_CATS);
+  const catList = cats.find(c=>c.k===edCat) ? cats : [{k:edCat, e:'📝'}].concat(cats);
+  const amtColor = t.type==='expense' ? 'var(--expense)' : 'var(--income)';
+
+  openSheet(`编辑流水`, `
+    <div class="field"><label>金额（可以直接算，例如 30-25）</label>
+      <input type="text" inputmode="decimal" id="edAmount" class="amount-input"
+             style="color:${amtColor}" placeholder="0.00" value="${esc(String(t.amount))}"></div>
+    <div class="field" style="margin-bottom:8px;"><label>分类</label></div>
+    <div class="cat-grid" id="edCatGrid">
+      ${catList.map(c=>`<div class="c ${c.k===edCat?'on':''}" data-cat="${esc(c.k)}">
+        <span class="e" style="display:inline-flex;width:26px;height:26px;border-radius:8px;background:${catColor(c.k)};color:#fff;align-items:center;justify-content:center;font-size:13px;font-weight:600;margin-bottom:4px;">${catInitial(c.k)}</span>
+        <span style="display:block;">${esc(c.k)}</span></div>`).join('')}
+    </div>
+    <div class="field"><label>账户</label>
+      <select id="edAccount">${DB.accounts.map(a=>`<option value="${a.id}" ${t.accountId===a.id?'selected':''}>${esc(groupOf(a.group).name)} · ${esc(a.name)}</option>`).join('')}</select></div>
+    <div class="field"><label>日期</label><input type="date" id="edDate" value="${t.date}"></div>
+    <div class="field"><label>备注</label><input type="text" id="edNote" placeholder="比如：午饭" value="${esc(t.note||'')}"></div>
+    <button class="btn-main danger" id="delTx" style="margin-top:14px;">删除这笔记录</button>
+    <div class="sheet-foot"><button class="btn-main" id="saveTxEdit">保存修改</button></div>
   `, ()=>{
-    $('delTx').onclick = ()=> confirmSheet('确认删除？','删除后账户余额会自动回滚。', ()=>{
-      DB.transactions = DB.transactions.filter(x=>x.id!==id);
-      save(true); closeSheet(); renderAll(); toast('已删除');
-    });
+    $('edCatGrid').onclick = e=>{
+      const d = e.target.closest('.c'); if(!d) return;
+      edCat = d.dataset.cat;
+      $('edCatGrid').querySelectorAll('.c').forEach(x=>x.classList.toggle('on', x===d));
+    };
+    $('saveTxEdit').onclick = ()=>{
+      const v = evalAmount($('edAmount').value);
+      if(v==null || v<=0){ toast('金额要填大于 0 的数（可以写 30-25 这样的算式）'); return; }
+      const a = acctById($('edAccount').value);
+      t.amount = round2(v);
+      // 只有分类真的变了才动 emoji（避免把历史流水里的旧 emoji 顺手改掉）
+      if(edCat !== t.cat){ t.cat = edCat; t.emoji = catEmoji(t.type, edCat); }
+      if(a){ t.accountId = a.id; t.accountName = a.name; }
+      t.date = $('edDate').value || t.date;
+      t.note = $('edNote').value.trim();
+      recomputeAll();
+      save(true); closeSheet(); renderAll(); toast('已保存 ✓');
+    };
+    bindDel();
   });
 }
 
@@ -1230,7 +1272,7 @@ function handleSmartText(text){
   const keepText = $('smartText') ? $('smartText').value : text;
   const prefill = {
     amount: r.amount!=null? r.amount : '',
-    cat: r.cat, note: '',
+    cat: r.cat, note: r.note || text,
     acctId: r.acctId, fromId: r.acctId, toId: r.toAcctId,
     date: today()
   };
@@ -1290,6 +1332,71 @@ function cnToNum(s){
   }
   total += section;
   return total>0? total : null;
+}
+
+/* ---------- 金额算式求值（用于"编辑流水"里的金额框） ----------
+   为什么需要它：把记错的金额改成实际金额时，不想让人心算。
+   例：原来是 30，想减掉退回的 25 → 直接填 "30-25" → 得 5。
+   为什么不用 eval / Function：那等于给输入开了一个代码执行口。
+   这里自己写一个只认 + - * / ( ) 和十进制小数的递归下降解析器。
+   ★ 纯数字走快路径，行为与 parseFloat 完全一致。 */
+function evalAmount(input){
+  let s = String(input==null ? '' : input).trim();
+  // 容忍全角与常见书写习惯
+  s = s.replace(/（/g,'(').replace(/）/g,')')
+       .replace(/[＋]/g,'+').replace(/[－—–−]/g,'-')
+       .replace(/[×✕xX]/g,'*').replace(/[÷／]/g,'/')
+       .replace(/[，,]/g,'').replace(/\s+/g,'');
+  if(!s) return null;
+  // 快路径：就是一个数 —— 与原来的 parseFloat 行为一致，识别填进来的值都走这里
+  if(/^-?\d+(\.\d+)?$/.test(s)){ const n = parseFloat(s); return isFinite(n) ? n : null; }
+  if(!/^[\d+\-*/().]+$/.test(s)) return null;
+
+  let i = 0;
+  const peek = ()=> s[i];
+
+  function expr(){
+    let v = term(); if(v==null) return null;
+    while(peek()==='+' || peek()==='-'){
+      const op = s[i++]; const r = term(); if(r==null) return null;
+      v = (op==='+') ? v+r : v-r;
+    }
+    return v;
+  }
+  function term(){
+    let v = unary(); if(v==null) return null;
+    while(peek()==='*' || peek()==='/'){
+      const op = s[i++]; const r = unary(); if(r==null) return null;
+      if(op==='/' && r===0) return null;
+      v = (op==='*') ? v*r : v/r;
+    }
+    return v;
+  }
+  function unary(){
+    if(peek()==='-'){ i++; const v = unary(); return v==null?null:-v; }
+    if(peek()==='+'){ i++; return unary(); }
+    return atom();
+  }
+  function atom(){
+    if(peek()==='('){
+      i++;
+      const v = expr(); if(v==null) return null;
+      if(peek()!==')') return null;
+      i++;
+      return v;
+    }
+    const start = i;
+    while(i<s.length && /[\d.]/.test(s[i])) i++;
+    if(i===start) return null;
+    const txt = s.slice(start,i);
+    if(!/^\d+\.?\d*$/.test(txt)) return null;   // 挡住 "1.2.3" / "." 这类畸形数字
+    const n = parseFloat(txt);
+    return isFinite(n) ? n : null;
+  }
+
+  const v = expr();
+  if(i !== s.length) return null;               // 有没吃完的字符 → 判定为不合法
+  return (typeof v==='number' && isFinite(v)) ? v : null;
 }
 
 /* ============================================================
