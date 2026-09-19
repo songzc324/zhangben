@@ -170,6 +170,11 @@ nav button svg{width:22px;height:22px;}
   background:#eef3ff;color:#1c4bb8;display:none;}
 .smart-result.show{display:block;}
 .smart-result .k{color:#5b7290;}
+.smart-ask{margin-top:8px;padding-top:8px;border-top:1px dashed rgba(28,75,184,.25);display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
+.smart-ask.plain{display:block;color:#8a6d3b;}
+.smart-ask .askb{border:1px solid #1c4bb8;background:#fff;color:#1c4bb8;font-size:13px;
+  padding:5px 16px;border-radius:8px;font-weight:500;cursor:pointer;}
+.smart-ask .askb:active{background:#1c4bb8;color:#fff;}
 
 /* toast */
 .toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) scale(.9);
@@ -371,9 +376,12 @@ const EXPENSE_CATS = [
   {k:'娱乐',e:'🎮'},{k:'医疗',e:'💊'},{k:'学习',e:'📚'},{k:'人情',e:'🎁'},
   {k:'通讯',e:'📱'},{k:'服饰',e:'👕'},{k:'日用',e:'🧻'},{k:'其他',e:'📦'}
 ];
+/* 收入分类
+   说明：'报销' 已移出可选列表 —— 报销改按"转账到债权账户"处理，不再是收入。
+   （CAT_COLORS / catInitial 里仍保留 '报销' 的映射，仅为万一有历史流水的显示兜底。） */
 const INCOME_CATS = [
-  {k:'职业收入',e:'💰'},{k:'奖金',e:'🎉'},{k:'兼职',e:'💼'},{k:'投资收益',e:'📈'},
-  {k:'红包',e:'🧧'},{k:'报销',e:'🧾'},{k:'退款',e:'↩️'},{k:'其他收入',e:'📦'}
+  {k:'职业收入',e:'💰'},{k:'奖金',e:'🎉'},{k:'兼职',e:'💼'},{k:'被动收入',e:'🏦'},
+  {k:'投资收益',e:'📈'},{k:'红包',e:'🧧'},{k:'退款',e:'↩️'},{k:'其他收入',e:'📦'}
 ];
 
 /* ---------- 数据层 ---------- */
@@ -826,8 +834,8 @@ const CAT_COLORS = {
   '餐饮':'#ff7043','交通':'#42a5f5','购物':'#ab47bc','居住':'#8d6e63',
   '娱乐':'#ec407a','医疗':'#26a69a','学习':'#5c6bc0','人情':'#ef5350',
   '通讯':'#29b6f6','服饰':'#ffa726','日用':'#66bb6a','其他':'#78909c',
-  '职业收入':'#25b26e','奖金':'#43a047','兼职':'#00897b','投资收益':'#fb8c00',
-  '红包':'#e53935','报销':'#546e7a','退款':'#7cb342','其他收入':'#78909c'
+  '职业收入':'#25b26e','奖金':'#43a047','兼职':'#00897b','被动收入':'#0f9d8f',
+  '投资收益':'#fb8c00','红包':'#e53935','报销':'#546e7a','退款':'#7cb342','其他收入':'#78909c'
 };
 const catColor = cat => CAT_COLORS[cat] || '#78909c';
 /* 取分类名首字做图标文字 */
@@ -835,7 +843,7 @@ const catInitial = cat => {
   const map = {
     '餐饮':'餐','交通':'交','购物':'购','居住':'住','娱乐':'娱','医疗':'医',
     '学习':'学','人情':'礼','通讯':'讯','服饰':'衣','日用':'日','其他':'他',
-    '职业收入':'薪','奖金':'奖','兼职':'兼','投资收益':'投','红包':'包',
+    '职业收入':'薪','奖金':'奖','兼职':'兼','被动收入':'租','投资收益':'投','红包':'包',
     '报销':'销','退款':'退','其他收入':'他'
   };
   return map[cat] || String(cat||'其').slice(0,1);
@@ -1065,6 +1073,11 @@ function openAddSheet(prefill){
       const b = e.target.closest('button'); if(!b) return;
       curType = b.dataset.type;
       $('segType').querySelectorAll('button').forEach(x=>x.classList.toggle('on', x===b));
+      // 换方向时，原分类若不属于新方向，重置为该方向的中性默认值
+      if(curType!=='transfer'){
+        const cats = curType==='expense' ? EXPENSE_CATS : INCOME_CATS;
+        if(!curCat || !cats.find(c=>c.k===curCat)) curCat = curType==='expense' ? '其他' : '其他收入';
+      }
       renderAddFields();
     };
   });
@@ -1093,15 +1106,32 @@ function renderAddFields(prefill){
       if(!amt || amt<=0){ toast('请输入金额'); return; }
       const from = $('fromAcct').value, to = $('toAcct').value;
       if(from===to){ toast('转出和转入账户不能相同'); return; }
+      const fa = acctById(from), ta = acctById(to);
       DB.transactions.push({id:uid(),type:'transfer',amount:round2(amt),
-        accountId:from, toAccountId:to, note:$('inNote').value.trim(), date:$('inDate').value||today(), ts:Date.now()});
+        accountId:from, accountName: fa ? fa.name : '',
+        toAccountId:to,  toAccountName: ta ? ta.name : '',
+        note:$('inNote').value.trim(), date:$('inDate').value||today(), ts:Date.now()});
       save(true); closeSheet(); renderAll(); toast('转账已记录 ✓');
     };
     return;
   }
 
-  const cats = curType==='expense' ? EXPENSE_CATS : INCOME_CATS;
-  if(!cats.find(c=>c.k===curCat)) curCat = cats[0].k;
+  const baseCats = curType==='expense' ? EXPENSE_CATS : INCOME_CATS;
+  /* 旧版这里是无条件 `if(!cats.find(...)) curCat = cats[0].k;`：
+     收入表第一项是"职业收入"，于是一旦分类不在表里（例如已移除的"报销"，
+     或与方向冲突的"居住"），就会被静默改成"职业收入" —— 会篡改历史流水。
+     现在分三种情况：
+       ① 分类在表里 → 正常
+       ② 明确带着一个不在表里的分类（载入历史流水）→ 临时补一项，原样保留
+       ③ 没有/不该有分类 → 落到中性的默认值                                  */
+  let cats = baseCats;
+  if(curCat && baseCats.find(c=>c.k===curCat)){
+    /* ① 正常 */
+  } else if(curCat && p.cat && p.cat===curCat){
+    cats = [{k:curCat, e:catEmoji(curType,curCat)}].concat(baseCats);   /* ② */
+  } else {
+    curCat = curType==='expense' ? '其他' : '其他收入';                  /* ③ */
+  }
   const amtColor = curType==='expense' ? 'var(--expense)' : 'var(--income)';
 
   $('addFields').innerHTML = `
@@ -1162,38 +1192,82 @@ function bindSmartInput(){
   });
 }
 
+/* 最近一次识别结果（供"类型待确认"按钮回调） */
+let lastSmart = null;
+
+/* 识别结果提示条的 HTML */
+function smartBarHTML(r){
+  const L = [];
+  L.push(`<span class="k">金额</span> <b>${r.amount!=null?fmtS(r.amount):'未识别，请手填'}</b>`);
+  if(r.type==='transfer'){
+    L.push(`<span class="k">转出</span> <b>${esc(r.acctName||'未识别')}</b>`);
+    L.push(`<span class="k">转入</span> <b>${esc(r.toAcctName||'未识别')}</b>`);
+    L.push(`<span class="k">类型</span> <b>转账</b>`);
+  } else {
+    L.push(`<span class="k">分类</span> <b>${esc(r.cat||(r.type==='income'?'其他收入':'其他'))}</b>`);
+    L.push(`<span class="k">账户</span> <b>${esc(r.acctName||'未识别')}</b>`);
+    L.push(`<span class="k">类型</span> <b>${r.type==='income'?'收入':'支出'}</b>`);
+  }
+  let html = '已识别：' + L.join(' · ');
+  if(r.ambiguous){
+    html += `<div class="smart-ask">这句话没说清是收还是付，点一下确认：`
+         +  `<button type="button" class="askb" data-t="expense">支出</button>`
+         +  `<button type="button" class="askb" data-t="income">收入</button></div>`;
+  } else if(r.unclearAcct){
+    html += `<div class="smart-ask plain">账户没认准，请在下面手动选一下</div>`;
+  }
+  return html;
+}
+
 /* 文字 → 字段 解析（供智能输入框调用） */
 function handleSmartText(text){
   const r = parseVoice(text);
+  lastSmart = { text, r };
   const res = $('smartResult');
-  const lines = [];
-  lines.push(`<span class="k">金额</span> <b>${r.amount!=null?fmtS(r.amount):'未识别，请手填'}</b>`);
-  lines.push(`<span class="k">分类</span> <b>${esc(r.cat||'其他')}</b>`);
-  lines.push(`<span class="k">账户</span> <b>${esc(r.acctName||'未识别')}</b>`);
-  lines.push(`<span class="k">类型</span> <b>${r.type==='income'?'收入':r.type==='transfer'?'转账':'支出'}</b>`);
-  if(res){
-    res.innerHTML = '已识别：' + lines.join(' · ');
-    res.classList.add('show');
-  }
 
-  curType = r.type==='transfer'?'expense':r.type;
+  curType = r.type;            // 转账就真的切到转账表单（旧版会强行改回"支出"）
   if(r.cat) curCat = r.cat;
-  // 保留智能框内容（renderAddFields 会重建下方表单，不动顶部）
   const keepText = $('smartText') ? $('smartText').value : text;
   const prefill = {
     amount: r.amount!=null? r.amount : '',
     cat: r.cat, note: '',
-    acctId: r.acctId, fromId:r.fromId, toId:r.toId,
+    acctId: r.acctId, fromId: r.acctId, toId: r.toAcctId,
     date: today()
   };
   const seg = $('segType');
   if(seg){ seg.querySelectorAll('button').forEach(x=>x.classList.toggle('on', x.dataset.type===curType)); }
   renderAddFields(prefill);
-  // 重建后恢复智能输入框内容与结果
   if($('smartText')) $('smartText').value = keepText;
-  if($('smartResult')){ $('smartResult').innerHTML = '已识别：' + lines.join(' · '); $('smartResult').classList.add('show'); }
+  if(res){ res.innerHTML = smartBarHTML(r); res.classList.add('show'); }
   bindSmartInput();
+  bindSmartAsk();
   if(r.amount==null) toast('没听清金额，请手动填写');
+}
+
+/* "类型待确认"的两个按钮：点一下换方向，分类跟着换到对应方向的词表 */
+function bindSmartAsk(){
+  const res = $('smartResult'); if(!res) return;
+  res.querySelectorAll('.askb').forEach(b=>{
+    b.onclick = ()=>{
+      const t = b.dataset.t;
+      const clean = (lastSmart && lastSmart.r) ? lastSmart.r.clean : '';
+      const c = matchCat(clean, t);
+      const cats = t==='expense' ? EXPENSE_CATS : INCOME_CATS;
+      curType = t;
+      curCat = cats.find(x=>x.k===c) ? c : (t==='expense'?'其他':'其他收入');
+      const seg = $('segType');
+      if(seg) seg.querySelectorAll('button').forEach(x=>x.classList.toggle('on', x.dataset.type===t));
+      const amt = $('inAmount') ? $('inAmount').value : '';
+      const keepText = $('smartText') ? $('smartText').value : '';
+      renderAddFields({ amount: amt, cat: curCat, acctId: lastSmart?lastSmart.r.acctId:null, date: today() });
+      if($('smartText')) $('smartText').value = keepText;
+      if(res && lastSmart){
+        res.innerHTML = smartBarHTML(Object.assign({}, lastSmart.r, {type:t, cat:curCat, ambiguous:false}));
+        res.classList.add('show');
+      }
+      bindSmartInput(); bindSmartAsk();
+    };
+  });
 }
 
 /* 关键词解析引擎 */
@@ -1218,70 +1292,253 @@ function cnToNum(s){
   return total>0? total : null;
 }
 
-function parseVoice(text){
-  let t = String(text||'').trim();
-  const out = {type:'expense', amount:null, cat:null, acctId:null, acctName:null, note:t};
+/* ============================================================
+   解析引擎（重构）
+   旧版三个毛病：
+     ① 支出分类与收入分类混在一张表里按书写顺序匹配 —— 收入句子里
+        会命中支出分类（"房租收入"命中'居住'，再被表单兜底改成'职业收入'）。
+     ② 账户"先命中先赢"，且用 replace(/银行|卡/) 剥出一堆没人会说的 key（"农业"）。
+     ③ 命中"报销"就当成收入 —— 报销其实是垫付，不是收入。
+   新版：先定方向 → 账户按"最长候选叫法"打分 → 把命中的账户字面从文本里挖掉
+        → 再在对应方向的分类表里找分类。无方向词且含双栖词时标记待确认，问一次。
+   注意：不变量 —— calcBalance 的四种 type 语义未改动。
+   ============================================================ */
 
-  /* 1. 方向判定 */
-  const incomeWords = ['收到','收入','发了工资','工资','报销','退款','红包','进账','到账','赚了','奖金'];
-  const transferWords = ['转到','转给','还给','还款','充值','转到卡'];
-  if(transferWords.some(w=>t.includes(w))) out.type = 'transfer';
-  else if(incomeWords.some(w=>t.includes(w))) out.type = 'income';
+/* 同一家银行的常见叫法（任一种都能与同组其它叫法互换） */
+const BANK_WORDS = [
+  ['工行','工商银行'], ['农行','农业银行'], ['中行','中国银行'], ['建行','建设银行'],
+  ['交行','交通银行'], ['招行','招商银行'],
+  ['农商行','上海农商','上海农商银行','农商银行','上海农村商业银行'],
+  ['邮储','邮储银行','邮政储蓄','邮政储蓄银行'],
+  ['中信','中信银行'], ['浦发','浦发银行'], ['民生','民生银行'], ['兴业','兴业银行'],
+  ['光大','光大银行'], ['平安','平安银行'], ['华夏','华夏银行'], ['广发','广发银行'],
+];
+/* 同一类卡的不同叫法 */
+const CARD_WORDS = [['信用卡','公务卡','贷记卡'], ['储蓄卡','借记卡']];
+/* 文本里的卡种线索（先判 credit，再判 saving） */
+const CARD_HINT = { credit:['信用卡','公务卡','贷记卡','花呗','白条'], saving:['储蓄卡','借记卡','卡'] };
+/* 分组别名：从分组语义推导（投资账户只有一家券商时特别管用） */
+const GROUP_ALIAS = {
+  invest: ['股票账户','股票','股市','券商','证券账户','证券'],
+  receiv: ['报销','待报销','垫付','应收款项','应收'],
+};
+/* 只剥离"钱包/余额"——这两个是真有用的（微信钱包→微信）。
+   绝不剥离"银行/卡"，那会造出"农业"这种没人会说的词。 */
+const STRIP_SUFFIX = /钱包|余额/g;
+/* 平台前缀：支付宝花呗→花呗、京东白条→白条（平台名没人会连着念全） */
+const PLATFORM_PREFIX = ['支付宝','京东','微信','淘宝','美团','拼多多','抖音','云闪付','滴滴','携程'];
+/* 剥掉平台名后如果只剩这些通用词，就不当候选（太泛，容易误命中） */
+const GENERIC_TAIL = ['钱包','余额','账户','卡','会员']; 
 
-  /* 2. 金额提取：优先阿拉伯数字，其次中文数字 */
-  let m = t.match(/(\d+(?:\.\d{1,2})?)\s*(?:块|元|块钱|人民币|rmb|￥|¥)?/i);
-  if(m){ out.amount = parseFloat(m[1]); }
-  else {
-    const cm = t.match(/([零一二两三四五六七八九十百千万]+)\s*(?:块|元|块钱)/);
-    if(cm){ const n = cnToNum(cm[1]); if(n!=null) out.amount = n; }
-  }
+function cardHint(seg){
+  if(!seg) return null;
+  if(CARD_HINT.credit.some(w=>seg.includes(w))) return 'credit';
+  if(CARD_HINT.saving.some(w=>seg.includes(w))) return 'saving';
+  return null;
+}
 
-  /* 3. 账户匹配（按名字长度倒序，避免"银行"匹配到"招商银行"之前） */
-  const acctList = DB.accounts.slice().sort((a,b)=>b.name.length-a.name.length);
-  for(const a of acctList){
-    const key = a.name.replace(/账户|钱包|余额|银行|卡/g,'').trim();
-    if(key && t.includes(key)){ out.acctId=a.id; out.acctName=a.name; break; }
-    if(t.includes(a.name)){ out.acctId=a.id; out.acctName=a.name; break; }
-  }
-  // 关键词 → 账户 兜底
-  if(!out.acctId){
-    if(t.includes('微信')) out.acctName='微信';
-    else if(t.includes('支付宝')) out.acctName='支付宝';
-    else if(t.includes('现金')) out.acctName='现金';
-    if(out.acctName){
-      const found = DB.accounts.find(a=>a.name.includes(out.acctName.replace('钱包','')));
-      if(found) out.acctId = found.id;
+/* 为一个账户生成所有可接受的叫法 */
+function accountCandidates(a){
+  const set = new Set([a.name]);
+  (Array.isArray(a.alias) ? a.alias : []).forEach(x=>{ if(x) set.add(x); });
+  const st = a.name.replace(STRIP_SUFFIX,'').trim();
+  if(st && st!==a.name) set.add(st);
+  for(const pf of PLATFORM_PREFIX){
+    if(a.name.startsWith(pf)){
+      const rest = a.name.slice(pf.length);
+      if(rest && !GENERIC_TAIL.includes(rest)) set.add(rest);
     }
   }
-
-  /* 4. 分类匹配 */
-  const catWords = [
-    ['餐饮', ['饭','吃饭','午饭','早饭','早饭','早餐','晚餐','夜宵','外卖','奶茶','咖啡','吃','餐厅','聚餐','食堂']],
-    ['交通', ['打车','滴滴','地铁','公交','高铁','火车','机票','加油','停车','过路费','交通','车费','油费']],
-    ['购物', ['购物','买东西','淘宝','京东','拼多多','买了个','下单','网购']],
-    ['居住', ['房租','水电','物业','燃气','电费','水费','房租费','房贷']],
-    ['娱乐', ['电影','游戏','唱歌','KTV','娱乐','玩','旅游','门票','演唱会']],
-    ['医疗', ['医院','看病','买药','药','体检','挂号','医疗']],
-    ['学习', ['书','买书','课程','学费','培训','学习','教育']],
-    ['人情', ['红包','送礼','随礼','请客','人情','礼金']],
-    ['通讯', ['话费','流量','电话费','宽带','通讯']],
-    ['服饰', ['衣服','裤子','鞋','买衣服','服饰','外套']],
-    ['日用', ['日用品','纸巾','洗发水','牙膏','超市','日用']],
-    ['职业收入', ['工资','薪水','月薪','发薪']],
-    ['奖金', ['奖金','年终奖','绩效']],
-    ['兼职', ['兼职','外快']],
-    ['投资收益', ['利息','分红','收益','投资']],
-    ['报销', ['报销']],
-    ['退款', ['退款','退货']]
-  ];
-  for(const [cat, words] of catWords){
-    if(words.some(w=>t.includes(w))){ out.cat = cat; break; }
+  if(a.group==='saving' || a.group==='credit'){
+    for(const n of [...set]) for(const grp of BANK_WORDS) for(const w of grp)
+      if(n.includes(w)) for(const w2 of grp) if(w2!==w) set.add(n.split(w).join(w2));
+    for(const n of [...set]) for(const grp of CARD_WORDS) for(const w of grp)
+      if(n.includes(w)) for(const w2 of grp) if(w2!==w) set.add(n.split(w).join(w2));
   }
-  if(!out.cat) out.cat = out.type==='income' ? '其他收入' : '其他';
+  if(a.group==='saving'){
+    for(const n of [...set]) if(!/卡$/.test(n)){ set.add(n+'卡'); set.add(n+'储蓄卡'); }
+  }
+  (GROUP_ALIAS[a.group]||[]).forEach(x=>set.add(x));
+  return [...set].filter(x=>x && x.length>=2);
+}
+
+/* 一个片段里所有账户的命中，按"命中的叫法长度"倒序 */
+function acctMatches(seg){
+  if(!seg || !DB || !Array.isArray(DB.accounts)) return [];
+  const hits = [];
+  for(const a of DB.accounts){
+    let top = null;
+    for(const c of accountCandidates(a)){
+      if(seg.includes(c) && (!top || c.length>top.length)) top = c;
+    }
+    if(top) hits.push({acct:a, matched:top, score:top.length});
+  }
+  return hits.sort((x,y)=>y.score-x.score);
+}
+
+/* 拍板唯一账户；无法唯一确定就返回 ambiguous（不猜） */
+function pickAccount(seg){
+  const hits = acctMatches(seg);
+  if(!hits.length) return null;
+  const max = hits[0].score;
+  let top = hits.filter(h=>h.score===max);
+  if(top.length>1){
+    const hint = cardHint(seg);
+    if(hint){ const f = top.filter(h=>h.acct.group===hint); if(f.length===1) top = f; }
+  }
+  if(top.length!==1) return {ambiguous:true, matched:'', acct:null};
+  return {ambiguous:false, matched:top[0].matched, acct:top[0].acct};
+}
+
+/* 取某分组下的账户，preferWords 优先 */
+function acctInGroup(gk, preferWords){
+  const list = (DB.accounts||[]).filter(a=>a.group===gk);
+  if(!list.length) return null;
+  for(const w of (preferWords||[])){ const f=list.find(a=>a.name.includes(w)); if(f) return f; }
+  return list.length===1 ? list[0] : null;
+}
+
+function extractAmount(t){
+  const m = t.match(/(\d+(?:\.\d{1,2})?)\s*(?:块|元|块钱|人民币|rmb|￥|¥)?/i);
+  if(m) return parseFloat(m[1]);
+  const cm = t.match(/([零一二两三四五六七八九十百千万]+)\s*(?:块|元|块钱)/);
+  if(cm){ const n = cnToNum(cm[1]); if(n!=null) return n; }
+  return null;
+}
+
+/* 分类词表：支出、收入分开，互不串味。改这里只需增项，不要改名。 */
+const CAT_RULES = {
+  expense: [
+    ['餐饮', ['吃饭','午饭','早饭','早餐','晚餐','夜宵','外卖','奶茶','咖啡','餐厅','聚餐','食堂','快餐','零食','水果','饭']],
+    ['交通', ['打车','滴滴','网约车','出租车','地铁','公交','高铁','火车','机票','车票','加油','油费','充电','充电桩','电瓶车','电动车','摩托','停车费','停车','过路费','高速费','洗车','共享单车','单车','车费','交通费','交通']],
+    ['购物', ['购物','买东西','淘宝','京东','拼多多','买了个','下单','网购','快递费']],
+    ['居住', ['房租','租金','水电','物业','燃气','电费','水费','取暖','装修','房贷','按揭','宽带费']],
+    ['娱乐', ['电影','游戏','唱歌','KTV','娱乐','旅游','门票','演唱会','健身','按摩','演出']],
+    ['医疗', ['医院','看病','买药','体检','挂号','医疗','门诊','牙科','住院','药']],
+    ['学习', ['买书','课程','学费','培训','学习','教育','文具','考试','报名费','书']],
+    ['人情', ['送礼','随礼','请客','人情','礼金','份子钱','红包']],
+    ['通讯', ['话费','流量','电话费','宽带','通讯','手机费','套餐费']],
+    ['服饰', ['衣服','裤子','买衣服','服饰','外套','裙子','帽子','鞋']],
+    ['日用', ['日用品','纸巾','洗发水','牙膏','超市','日用','洗衣液','清洁用品']],
+    ['其他', []]
+  ],
+  income: [
+    ['职业收入', ['工资','薪水','月薪','发薪','绩效工资','岗位津贴']],
+    ['奖金', ['奖金','年终奖','绩效','奖励']],
+    ['兼职', ['兼职','外快','讲课费','课时费','劳务费','讲座费','评审费']],
+    ['被动收入', ['房租','租金','利息','分红','理财收益','存款利息','股息','收租','被动收入']],
+    ['投资收益', ['投资收益','炒股','基金收益','股票收益','差价','卖出']],
+    ['红包', ['红包','压岁钱']],
+    ['退款', ['退款','退货','退钱']],
+    ['其他收入', []]
+  ]
+};
+function matchCat(clean, type){
+  const rules = CAT_RULES[type] || CAT_RULES.expense;
+  for(const [cat, words] of rules){
+    if(words.some(w=>clean.includes(w))) return cat;
+  }
+  return type==='income' ? '其他收入' : '其他';
+}
+
+/* 方向词 */
+const INCOME_KW  = ['收到','收入','进账','到账','发了工资','工资','奖金','赚了','利息','分红','收了'];
+const EXPENSE_KW = ['花了','花掉','花销','买了','买了个','付了','交了','缴纳','交房租','交租金','付房租','付租金','支付','消费','支出','刷了','刷卡','充了'];
+const TRAN_KW    = ['转账','转到','转给','还给','还款','充值','转入','转出'];
+/* 双栖词：既可能是收进来也可能是付出去。没有方向词时问一句，不猜。 */
+const AMBIG_WORDS = ['房租','租金','押金','退款'];
+const FAIL_RE = /没报下来|报不下来|报不了|没批|报销失败|不给报|没给报/;
+
+function parseVoice(text){
+  const t0 = String(text||'').trim();
+  const out = {type:'expense', amount:null, cat:null,
+               acctId:null, acctName:null, toAcctId:null, toAcctName:null,
+               note:t0, ambiguous:false, unclearAcct:false, clean:t0, reason:''};
+  out.amount = extractAmount(t0);
+
+  /* --- A. 报销没报下来 → 从债权账户记一笔支出（未报销的出口） --- */
+  if(t0.includes('报销') && FAIL_RE.test(t0)){
+    out.type='expense'; out.reason='reimburse-fail';
+    const ra = acctInGroup('receiv', ['报销','应收']);
+    if(ra){ out.acctId=ra.id; out.acctName=ra.name; } else out.unclearAcct=true;
+    out.cat = matchCat(t0, 'expense');
+    return out;
+  }
+
+  /* --- B. 报销 → 转账（银行卡 ⇄ 债权账户） --- */
+  if(t0.includes('报销')){
+    out.type='transfer'; out.reason='reimburse';
+    const bao = acctInGroup('receiv', ['报销','应收']);
+    const idxTo = t0.search(/到(?!账)/);
+    if(idxTo>=0){
+      const head=t0.slice(0,idxTo), tail=t0.slice(idxTo+1);
+      const f=pickAccount(head), g=pickAccount(tail);
+      if(f && f.acct){ out.acctId=f.acct.id; out.acctName=f.acct.name; }
+      else out.unclearAcct=true;
+      if(g && g.acct){ out.toAcctId=g.acct.id; out.toAcctName=g.acct.name; }
+      else out.unclearAcct=true;
+    } else {
+      const others = acctMatches(t0).filter(h=>h.acct.group!=='receiv');
+      if(others.length){
+        out.acctId=others[0].acct.id; out.acctName=others[0].acct.name;
+        if(bao){ out.toAcctId=bao.id; out.toAcctName=bao.name; }
+        else out.unclearAcct=true;
+      } else if(bao){
+        out.acctId=bao.id; out.acctName=bao.name; out.unclearAcct=true;
+      } else out.unclearAcct=true;
+    }
+    if(out.acctId && out.toAcctId && out.acctId===out.toAcctId){ out.toAcctId=null; out.toAcctName=null; }
+    return out;
+  }
+
+  /* --- C. 普通转账 --- */
+  if(TRAN_KW.some(w=>t0.includes(w))){
+    out.type='transfer';
+    const idxTo = t0.search(/到(?!账)/);
+    if(idxTo>=0){
+      const f=pickAccount(t0.slice(0,idxTo)), g=pickAccount(t0.slice(idxTo+1));
+      if(f && f.acct){ out.acctId=f.acct.id; out.acctName=f.acct.name; }
+      else out.unclearAcct=true;
+      if(g && g.acct){ out.toAcctId=g.acct.id; out.toAcctName=g.acct.name; }
+      else out.unclearAcct=true;
+    } else {
+      const uniq = [];
+      acctMatches(t0).forEach(h=>{ if(!uniq.find(u=>u.acct.id===h.acct.id)) uniq.push(h); });
+      if(uniq.length){ out.acctId=uniq[0].acct.id; out.acctName=uniq[0].acct.name; }
+      else out.unclearAcct=true;
+      if(uniq.length>1){ out.toAcctId=uniq[1].acct.id; out.toAcctName=uniq[1].acct.name; }
+      else out.unclearAcct=true;
+    }
+    if(out.acctId && out.toAcctId && out.acctId===out.toAcctId){ out.toAcctId=null; out.toAcctName=null; }
+    return out;
+  }
+
+  /* --- D. 账户匹配 → 把命中的字面从文本里挖掉 --- */
+  const pick = pickAccount(t0);
+  if(pick && pick.acct){ out.acctId=pick.acct.id; out.acctName=pick.acct.name; }
+  else if(pick && pick.ambiguous) out.unclearAcct=true;
+  if(pick && pick.matched) out.clean = t0.split(pick.matched).join(' ');
+  else out.clean = t0;
+
+  /* --- E. 方向 --- */
+  const iKw = INCOME_KW.filter(w=>out.clean.includes(w));
+  const eKw = EXPENSE_KW.filter(w=>out.clean.includes(w));
+  if(iKw.length && !eKw.length) out.type='income';
+  else if(eKw.length && !iKw.length) out.type='expense';
+  else if(iKw.length && eKw.length)
+    out.type = out.clean.indexOf(iKw[0]) <= out.clean.indexOf(eKw[0]) ? 'income' : 'expense';
+  else {
+    out.type='expense';
+    if(AMBIG_WORDS.some(w=>out.clean.includes(w))){ out.ambiguous=true; out.reason='ambiguous'; }
+  }
+
+  /* --- F. 分类：只在对应方向的词表里找 --- */
+  out.cat = matchCat(out.clean, out.type);
   return out;
 }
 /* 暴露给调试用 */
 window.parseVoice = parseVoice;
+window.matchCat = matchCat;
 
 /* ---------- 报表 ---------- */
 function renderReport(){
