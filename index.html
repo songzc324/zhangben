@@ -1483,6 +1483,48 @@ function acctMatches(seg){
   return hits.sort((x,y)=>y.score-x.score);
 }
 
+/* 命中的账户，按"在句子里出现的先后"排序。
+   ★ 转账方向必须靠语序判断，不能靠"命中长度"——旧版就是栽在这里，
+     把"建行卡转账招行信用卡"识别成了从招行信用卡转出。
+   同时抑制"被更长命中覆盖"的短命中：例如句子里的"招行信用卡"已经整体命中，
+   就不该再让"招行"算成"招商银行（储蓄卡）"的一次命中 —— 否则语序会被污染，
+     反向句会算错转入方。 */
+function acctHitsByPosition(seg){
+  const raw = acctMatches(seg)
+    .map(h=>({acct:h.acct, matched:h.matched, score:h.score, start:seg.indexOf(h.matched)}))
+    .filter(h=>h.start >= 0)
+    .sort((a,b)=> (b.score - a.score) || (a.start - b.start));   // 长命中优先
+  const picked = [];
+  for(const h of raw){
+    const end = h.start + h.matched.length;
+    if(picked.some(k => h.start < k.end && end > k.pos)) continue;   // 与已选区间重叠 → 丢掉
+    picked.push({acct:h.acct, matched:h.matched, pos:h.start, end});
+  }
+  return picked.sort((a,b)=>a.pos - b.pos);
+}
+
+/* 判断转账方向。优先级：
+     ① 有"从X"        → X 是转出方
+     ② 有"到/给Y"     → Y 是转入方
+     ③ 两者都没有      → 按语序：先出现的转出，后出现的转入
+   缺哪一侧就用剩下的那个账户补齐。 */
+function resolveTransferDirection(seg, hits){
+  hits = hits || acctHitsByPosition(seg);
+  if(!hits.length) return {from:null, to:null};
+
+  const idxFrom = seg.search(/从/);
+  const idxTo   = seg.search(/到(?!账)|给(?!你)/);
+  let from = null, to = null;
+
+  if(idxFrom >= 0) from = hits.find(h=>h.pos > idxFrom) || null;
+  if(idxTo   >= 0) to   = hits.find(h=>h.pos > idxTo)   || null;
+
+  if(from && !to) to   = hits.find(h=>h.acct.id !== from.acct.id) || null;
+  if(to   && !from) from = hits.find(h=>h.acct.id !== to.acct.id)   || null;
+  if(!from && !to){ from = hits[0] || null; to = hits[1] || null; }   // ③ 按语序
+  return {from, to};
+}
+
 /* 拍板唯一账户；无法唯一确定就返回 ambiguous（不猜） */
 function pickAccount(seg){
   const hits = acctMatches(seg);
@@ -1551,7 +1593,12 @@ function matchCat(clean, type){
 /* 方向词 */
 const INCOME_KW  = ['收到','收入','进账','到账','发了工资','工资','奖金','赚了','利息','分红','收了'];
 const EXPENSE_KW = ['花了','花掉','花销','买了','买了个','付了','交了','缴纳','交房租','交租金','付房租','付租金','支付','消费','支出','刷了','刷卡','充了'];
-const TRAN_KW    = ['转账','转到','转给','还给','还款','充值','转入','转出'];
+/* 转账动作词。
+   strong：本身就明确表示转账，见到即可判定。
+   weak：单个"转/还/汇"——中文里太常见（转机、还买了、汇报……），
+         所以只在"一句话里出现了至少两个账户"时才敢判定为转账。 */
+const TRAN_STRONG = /转账|转到|转给|转入|转出|还给|还款|充值|汇到|汇款|打款|存到|打钱|还款给/;
+const TRAN_WEAK   = /转|还|汇/;
 /* 双栖词：既可能是收进来也可能是付出去。没有方向词时问一句，不猜。 */
 const AMBIG_WORDS = ['房租','租金','押金','退款'];
 const FAIL_RE = /没报下来|报不下来|报不了|没批|报销失败|不给报|没给报/;
@@ -1572,6 +1619,9 @@ function parseVoice(text){
     return out;
   }
 
+  /* 账户命中（按语序）—— 转账方向靠它判断，而不是靠"命中长度" */
+  const hitsPos = acctHitsByPosition(t0);
+
   /* --- B. 报销 → 转账（银行卡 ⇄ 债权账户） --- */
   if(t0.includes('报销')){
     out.type='transfer'; out.reason='reimburse';
@@ -1585,7 +1635,8 @@ function parseVoice(text){
       if(g && g.acct){ out.toAcctId=g.acct.id; out.toAcctName=g.acct.name; }
       else out.unclearAcct=true;
     } else {
-      const others = acctMatches(t0).filter(h=>h.acct.group!=='receiv');
+      /* 没有"到"：按语序取第一个非债权账户作为垫付方 */
+      const others = hitsPos.filter(h=>h.acct.group!=='receiv');
       if(others.length){
         out.acctId=others[0].acct.id; out.acctName=others[0].acct.name;
         if(bao){ out.toAcctId=bao.id; out.toAcctName=bao.name; }
@@ -1594,29 +1645,31 @@ function parseVoice(text){
         out.acctId=bao.id; out.acctName=bao.name; out.unclearAcct=true;
       } else out.unclearAcct=true;
     }
-    if(out.acctId && out.toAcctId && out.acctId===out.toAcctId){ out.toAcctId=null; out.toAcctName=null; }
+    if(out.acctId && out.toAcctId && out.acctId===out.toAcctId){
+      out.toAcctId=null; out.toAcctName=null; out.unclearAcct=true;
+    }
     return out;
   }
 
-  /* --- C. 普通转账 --- */
-  if(TRAN_KW.some(w=>t0.includes(w))){
+  /* --- C. 普通转账 ---
+     strong 动作词直接判定；weak（单独一个"转 / 还 / 汇"）必须句中出现 ≥2 个账户
+     才敢判定，避免"转机""还买了""汇报"这类被误认成转账。 */
+  const strongTran = TRAN_STRONG.test(t0);
+  /* weak 判定：单独一个"转 / 还 / 汇"要额外有证据才认 ——
+     要么句中出现 ≥2 个账户（"建行转招行"），
+     要么有明确的"到某处"（"转5000到建行卡"）。
+     这样"转机""还买了""汇报"不会被误认成转账。 */
+  const weakTran = !strongTran && TRAN_WEAK.test(t0) &&
+                   (hitsPos.length >= 2 || (/到(?!账)/.test(t0) && hitsPos.length >= 1));
+  if(strongTran || weakTran){
     out.type='transfer';
-    const idxTo = t0.search(/到(?!账)/);
-    if(idxTo>=0){
-      const f=pickAccount(t0.slice(0,idxTo)), g=pickAccount(t0.slice(idxTo+1));
-      if(f && f.acct){ out.acctId=f.acct.id; out.acctName=f.acct.name; }
-      else out.unclearAcct=true;
-      if(g && g.acct){ out.toAcctId=g.acct.id; out.toAcctName=g.acct.name; }
-      else out.unclearAcct=true;
-    } else {
-      const uniq = [];
-      acctMatches(t0).forEach(h=>{ if(!uniq.find(u=>u.acct.id===h.acct.id)) uniq.push(h); });
-      if(uniq.length){ out.acctId=uniq[0].acct.id; out.acctName=uniq[0].acct.name; }
-      else out.unclearAcct=true;
-      if(uniq.length>1){ out.toAcctId=uniq[1].acct.id; out.toAcctName=uniq[1].acct.name; }
-      else out.unclearAcct=true;
+    const d = resolveTransferDirection(t0, hitsPos);
+    if(d.from){ out.acctId=d.from.acct.id; out.acctName=d.from.acct.name; }
+    if(d.to)  { out.toAcctId=d.to.acct.id;  out.toAcctName=d.to.acct.name; }
+    if(!d.from || !d.to) out.unclearAcct=true;
+    if(out.acctId && out.toAcctId && out.acctId===out.toAcctId){
+      out.toAcctId=null; out.toAcctName=null; out.unclearAcct=true;
     }
-    if(out.acctId && out.toAcctId && out.acctId===out.toAcctId){ out.toAcctId=null; out.toAcctName=null; }
     return out;
   }
 
