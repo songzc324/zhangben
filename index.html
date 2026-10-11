@@ -1258,9 +1258,39 @@ function bindSmartBtn(){
   if(btn) btn.onclick = runSmartParse;
 }
 
+/* ★ 自动识别改为「看键盘收放」，不再只靠输入框失焦。
+   原因：安卓上点键盘自带的「收起」键时，输入框往往不失焦（光标还在里面），
+   所以 blur 根本不触发 —— 这正是"收起键盘不自动识别"的根源。
+   判据：键盘高度 = 窗口高度 − 可视区高度；从「有键盘」变成「没键盘」即认为收起。 */
+let kbWatchBound = false;
+let kbWasOpen = false;
+
+/* 键盘高度变化的统一处理（抽成独立函数，便于在测试里直接驱动） */
+function applyKeyboardHeight(kbH){
+  const open = kbH > 100;                 // 100px 容差，避开地址栏收放造成的抖动
+  const sheetOpen = $('sheet') && $('sheet').classList.contains('show');
+  if(kbWasOpen && !open && sheetOpen){
+    const ta = $('smartText');
+    const txt = ta ? ta.value.trim() : '';
+    if(txt) runSmartParse();              // 同一段文字是否重复识别，由 runSmartParse 去重
+  }
+  kbWasOpen = open;
+}
+
+function watchKeyboard(){
+  const vv = window.visualViewport;
+  if(!vv || kbWatchBound) return;         // 只绑一次（bindSmartInput 会被多次调用）
+  kbWatchBound = true;
+  const onVV = ()=> applyKeyboardHeight(window.innerHeight - vv.height);
+  vv.addEventListener('resize', onVV);
+  vv.addEventListener('scroll', onVV);
+  onVV();
+}
+
 function bindSmartInput(){
   const ta = $('smartText');
   if(!ta) return;
+  watchKeyboard();
   bindSmartBtn();
   /* 用 on- 赋值而不是 addEventListener：本函数会被多次调用，
      旧写法会让 blur / keydown 监听器一次次累积。 */
