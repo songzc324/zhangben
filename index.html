@@ -124,7 +124,12 @@ nav button svg{width:22px;height:22px;}
   padding:10px 20px calc(14px + env(safe-area-inset-bottom));border-top:1px solid var(--line);
   margin-top:8px;z-index:6;}
 .sheet-foot .btn-main{width:100%;margin:0;}
-/* 识别结果摘要放进保存栏：紧贴保存键上方，手眼都在下半屏 */
+/* 底部一行：左边「识别」、右边「保存」。两个动作挨在一起，手指不用上下跑，
+   而且键盘弹起时被顶出屏幕的是弹层顶部、不是底部 —— 放在这里最安全。 */
+.sheet-foot .foot-row{display:flex;gap:10px;}
+.sheet-foot .foot-row .btn-main{width:auto;flex:1;}
+.sheet-foot .foot-row .btn-main.sec{flex:0 0 34%;}
+/* 识别结果摘要紧贴底部这一行的上方 */
 .sheet-foot .smart-result{margin:0 0 8px;}
 .sheet-head{display:flex;justify-content:space-between;align-items:center;padding:18px 20px 8px;
   position:sticky;top:0;background:#fff;z-index:8;}
@@ -160,7 +165,7 @@ nav button svg{width:22px;height:22px;}
 .smart-box .sb-label{font-size:12px;color:var(--primary);font-weight:600;margin-bottom:8px;
   display:flex;align-items:center;gap:6px;}
 .smart-input-row{display:flex;gap:8px;align-items:stretch;}
-.smart-box textarea{flex:1;border:none;background:#fff;border-radius:10px;padding:11px 12px;
+.smart-box textarea{width:100%;border:none;background:#fff;border-radius:10px;padding:11px 12px;
   font-size:15px;font-family:inherit;resize:none;outline:none;min-height:44px;
   border:1px solid #e6ebf5;line-height:1.5;color:var(--text);}
 .smart-box textarea:focus{border-color:var(--primary);}
@@ -1097,11 +1102,8 @@ function openAddSheet(prefill){
   openSheet('记一笔', `
     <div class="smart-box">
       <div class="sb-label">✍️ 说一句话 / 打几个字，自动填好</div>
-      <div class="smart-input-row">
-        <textarea id="smartText" rows="2" placeholder="例：吃饭花了20块用微信"></textarea>
-        <button class="smart-btn" id="smartBtn">识别</button>
-      </div>
-      <div class="smart-tip">用输入法语音或打字都行 · 收起键盘会自动识别</div>
+      <textarea id="smartText" rows="1" placeholder="例：吃饭花了20块用微信"></textarea>
+      <div class="smart-tip">语音或打字都行 · 收起键盘自动识别，也可点下方「识别」</div>
     </div>
     <div class="seg" id="segType">
       <button data-type="expense" class="on">支出</button>
@@ -1110,12 +1112,15 @@ function openAddSheet(prefill){
     </div>
     <div id="addFields"></div>
   `, ()=>{
+    lastParsedText = '';        // 新开一次记账，清掉上一条的去重标记
     renderAddFields(prefill);
     bindSmartInput();
-    // 打开即聚焦：键盘直接升起，手指不必先移到屏幕上方去点输入框。
-    // 识别结果摘要已挪到吸底的保存栏内（见 renderAddFields），所以手和眼都在下半屏。
+    // 聚焦必须等弹层滑入动画（.28s）走完再执行。
+    // 旧版在打开后 30ms 就 focus，那时弹层还在滑动，浏览器按"动画中的位置"去算滚动补偿，
+    // 动画结束位置变了，输入框就被顶出视野 —— 手机上表现为"看不到识别框"。
+    // 而手指点（动画早已结束）不会被顶走，两者的差别就在这里。
     const ta = $('smartText');
-    if(ta) { try{ ta.focus(); }catch(e){} }
+    if(ta) setTimeout(()=>{ try{ ta.focus(); }catch(e){} }, 300);
     $('segType').onclick = e=>{
       const b = e.target.closest('button'); if(!b) return;
       curType = b.dataset.type;
@@ -1148,7 +1153,13 @@ function renderAddFields(prefill){
         <input type="number" inputmode="decimal" id="inAmount" class="amount-input" style="color:var(--primary)" placeholder="0.00" value="${amountVal}"></div>
       <div class="field"><label>日期</label><input type="date" id="inDate" value="${dateVal}"></div>
       <div class="field"><label>备注（可选）</label><input type="text" id="inNote" placeholder="比如：还信用卡" value="${esc(noteVal)}"></div>
-      <div class="sheet-foot"><div class="smart-result" id="smartResult"></div><button class="btn-main" id="saveTx">保存转账</button></div>
+      <div class="sheet-foot">
+        <div class="smart-result" id="smartResult"></div>
+        <div class="foot-row">
+          <button class="btn-main sec" id="smartBtn">识别</button>
+          <button class="btn-main" id="saveTx">保存转账</button>
+        </div>
+      </div>
     `;
     paintFootResult();
     $('saveTx').onclick = ()=>{
@@ -1197,7 +1208,13 @@ function renderAddFields(prefill){
       <select id="inAccount">${DB.accounts.map(a=>`<option value="${a.id}" ${p.acctId===a.id?'selected':''}>${esc(groupOf(a.group).name)} · ${esc(a.name)}</option>`).join('')}</select></div>
     <div class="field"><label>备注（可选）</label><input type="text" id="inNote" placeholder="比如：午饭" value="${esc(noteVal)}"></div>
     <div class="field"><label>日期</label><input type="date" id="inDate" value="${dateVal}"></div>
-    <div class="sheet-foot"><div class="smart-result" id="smartResult"></div><button class="btn-main" id="saveTx">保存</button></div>
+    <div class="sheet-foot">
+      <div class="smart-result" id="smartResult"></div>
+      <div class="foot-row">
+        <button class="btn-main sec" id="smartBtn">识别</button>
+        <button class="btn-main" id="saveTx">保存</button>
+      </div>
+    </div>
   `;
   paintFootResult();
   $('catGrid').querySelectorAll('[data-cat]').forEach(el=>{
@@ -1218,31 +1235,46 @@ function renderAddFields(prefill){
   };
 }
 
-/* ---------- 智能输入（顶部第一入口） ---------- */
+/* ---------- 智能输入（顶部输入框 + 底部识别键） ---------- */
+/* 上一段已经识别过的文字。「点底部识别键」和「收起键盘自动识别」是两条并存的触发路径，
+   同一句话可能被它们各触发一次（点按钮时输入框会先失焦）——按内容去重最可靠。
+   用户在输入框里一改动内容（oninput），这个标记就清空，可以重新识别。 */
+let lastParsedText = '';
+
+/* 识别统一入口 */
+function runSmartParse(){
+  const ta = $('smartText');
+  const txt = ta ? ta.value.trim() : '';
+  if(!txt){ toast('先输入内容'); return; }
+  if(txt === lastParsedText) return;      // 同一段文字不重复识别
+  lastParsedText = txt;
+  handleSmartText(txt);
+}
+
+/* 识别键在吸底的底部栏里，而 renderAddFields 每次重建表单都会把它一起重建掉，
+   所以重建之后必须重新绑一次 —— 统一由 paintFootResult() 负责调用。 */
+function bindSmartBtn(){
+  const btn = $('smartBtn');
+  if(btn) btn.onclick = runSmartParse;
+}
+
 function bindSmartInput(){
   const ta = $('smartText');
-  const btn = $('smartBtn');
   if(!ta) return;
-  let autoDone = false;
-
-  const runParse = ()=>{
-    const txt = ta.value.trim();
-    if(!txt){ toast('先输入内容'); return; }
-    autoDone = true;
-    handleSmartText(txt);
-  };
-  btn.onclick = runParse;
+  bindSmartBtn();
+  /* 用 on- 赋值而不是 addEventListener：本函数会被多次调用，
+     旧写法会让 blur / keydown 监听器一次次累积。 */
+  ta.oninput = ()=>{ lastParsedText = ''; };          // 内容一改，就允许重新识别
   // 收起键盘（失焦）自动识别
-  ta.addEventListener('blur', ()=>{
-    if(autoDone) return;
+  ta.onblur = ()=>{
     const txt = ta.value.trim();
-    if(!txt) return;
-    setTimeout(()=>{ if(document.activeElement!==btn) runParse(); }, 180);
-  });
+    if(!txt || txt === lastParsedText) return;
+    setTimeout(()=>{ if(document.activeElement!==$('smartBtn')) runSmartParse(); }, 180);
+  };
   // 回车识别
-  ta.addEventListener('keydown', e=>{
-    if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); runParse(); }
-  });
+  ta.onkeydown = e=>{
+    if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); runSmartParse(); }
+  };
 }
 
 /* 最近一次识别结果（供"类型待确认"按钮回调） */
@@ -1254,9 +1286,12 @@ let lastBarHTML = '';
 
 /* 把摘要画进保存栏。renderAddFields 每次重建表单后都要调一次。 */
 function paintFootResult(){
-  const el = $('smartResult'); if(!el) return;
-  el.innerHTML = lastBarHTML;
-  el.classList.toggle('show', !!lastBarHTML);
+  const el = $('smartResult');
+  if(el){
+    el.innerHTML = lastBarHTML;
+    el.classList.toggle('show', !!lastBarHTML);
+  }
+  bindSmartBtn();   /* 底部栏刚被重建，识别键要重新绑上 */
 }
 
 /* 识别结果提示条的 HTML */
