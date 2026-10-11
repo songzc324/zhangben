@@ -233,18 +233,21 @@ nav button svg{width:22px;height:22px;}
     <select id="monthSel"></select>
   </div>
   <div class="summary">
-    <div class="item"><div class="label">本月支出</div><div class="val" id="sumExp">¥0</div></div>
+    <div class="item"><div class="label" id="sumExpLabel">本月支出</div><div class="val" id="sumExp">¥0</div></div>
     <div class="divider"></div>
-    <div class="item"><div class="label">本月收入</div><div class="val" id="sumInc">¥0</div></div>
+    <div class="item"><div class="label" id="sumIncLabel">本月收入</div><div class="val" id="sumInc">¥0</div></div>
     <div class="divider"></div>
-    <div class="item"><div class="label">本月结余</div><div class="val" id="sumBal">¥0</div></div>
+    <div class="item"><div class="label" id="sumBalLabel">本月结余</div><div class="val" id="sumBal">¥0</div></div>
   </div>
 </header>
 
 <main id="page-home">
   <div class="quick" id="quickBox"></div>
   <div class="card">
-    <h3>本月流水 <span class="sub" id="homeCount"></span></h3>
+    <h3><span id="homeTitle">本月流水</span> <span class="sub" id="homeCount"></span><span class="act" id="searchToggle">搜索</span></h3>
+    <div id="searchBox" style="display:none;margin:0 0 12px;">
+      <input type="search" id="searchInput" placeholder="搜备注 / 分类 / 账户 / 金额" style="width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font-size:15px;outline:none;font-family:inherit;background:#fafbfc;color:var(--text);">
+    </div>
     <div id="homeList"></div>
   </div>
 </main>
@@ -280,6 +283,10 @@ nav button svg{width:22px;height:22px;}
     </div>
   </div>
   <div class="card">
+    <h3>净资产走势 <span class="sub" id="netRange">近 12 个月</span></h3>
+    <div class="chart-wrap"><canvas id="chartNet"></canvas></div>
+  </div>
+  <div class="card">
     <h3>我的账户 <span class="act" id="addAcctBtn">+ 添加</span></h3>
     <div id="acctList"></div>
   </div>
@@ -301,6 +308,10 @@ nav button svg{width:22px;height:22px;}
   <div class="card">
     <h3>年度支出分类 <span class="sub">按金额</span></h3>
     <div id="yBars"></div>
+  </div>
+  <div class="card">
+    <h3>年度收入来源 <span class="sub">按金额</span></h3>
+    <div id="yIncomeBars"></div>
   </div>
 </main>
 
@@ -381,7 +392,8 @@ const ACCT_GROUPS = [
 const EXPENSE_CATS = [
   {k:'餐饮',e:'🍜'},{k:'交通',e:'🚗'},{k:'购物',e:'🛍️'},{k:'居住',e:'🏠'},
   {k:'娱乐',e:'🎮'},{k:'医疗',e:'💊'},{k:'学习',e:'📚'},{k:'人情',e:'🎁'},
-  {k:'通讯',e:'📱'},{k:'服饰',e:'👕'},{k:'日用',e:'🧻'},{k:'其他',e:'📦'}
+  {k:'通讯',e:'📱'},{k:'服饰',e:'👕'},{k:'日用',e:'🧻'},{k:'宠物',e:'🐾'},
+  {k:'其他',e:'📦'}
 ];
 /* 收入分类
    说明：'报销' 已移出可选列表 —— 报销改按"转账到债权账户"处理，不再是收入。
@@ -840,7 +852,7 @@ const acctById = id => DB.accounts.find(a=>a.id===id);
 const CAT_COLORS = {
   '餐饮':'#ff7043','交通':'#42a5f5','购物':'#ab47bc','居住':'#8d6e63',
   '娱乐':'#ec407a','医疗':'#26a69a','学习':'#5c6bc0','人情':'#ef5350',
-  '通讯':'#29b6f6','服饰':'#ffa726','日用':'#66bb6a','其他':'#78909c',
+  '通讯':'#29b6f6','服饰':'#ffa726','日用':'#66bb6a','宠物':'#795548','其他':'#78909c',
   '职业收入':'#25b26e','奖金':'#43a047','兼职':'#00897b','被动收入':'#0f9d8f',
   '投资收益':'#fb8c00','红包':'#e53935','报销':'#546e7a','退款':'#7cb342','其他收入':'#78909c'
 };
@@ -849,7 +861,7 @@ const catColor = cat => CAT_COLORS[cat] || '#78909c';
 const catInitial = cat => {
   const map = {
     '餐饮':'餐','交通':'交','购物':'购','居住':'住','娱乐':'娱','医疗':'医',
-    '学习':'学','人情':'礼','通讯':'讯','服饰':'衣','日用':'日','其他':'他',
+    '学习':'学','人情':'礼','通讯':'讯','服饰':'衣','日用':'日','宠物':'宠','其他':'他',
     '职业收入':'薪','奖金':'奖','兼职':'兼','被动收入':'租','投资收益':'投','红包':'包',
     '报销':'销','退款':'退','其他收入':'他'
   };
@@ -897,6 +909,28 @@ function netWorth(){
   return {asset: round2(asset), debt: round2(debt), net: round2(asset-debt)};
 }
 
+/* 截至某日（含）的净资产 —— 与 netWorth() 同一套口径，
+   只是把"现在的余额"换成"那一天结束时的余额"，供净资产走势图用。 */
+function netWorthAt(dateStr){
+  let asset=0, debt=0;
+  DB.accounts.forEach(a=>{
+    let bal = num(a.init);
+    DB.transactions.forEach(t=>{
+      if(t.date > dateStr) return;
+      if(t.type==='expense' && t.accountId===a.id) bal -= num(t.amount);
+      else if(t.type==='income' && t.accountId===a.id) bal += num(t.amount);
+      else if(t.type==='transfer'){
+        if(t.accountId===a.id) bal -= num(t.amount);
+        if(t.toAccountId===a.id) bal += num(t.amount);
+      } else if(t.type==='adjust' && t.accountId===a.id) bal += num(t.amount);
+    });
+    const g = groupOf(a.group);
+    if(g.type==='debt') debt += Math.max(0, -bal);
+    else asset += bal;
+  });
+  return round2(asset - debt);
+}
+
 /* ---------- 月份 / 日期 ---------- */
 let curMonth = new Date().toLocaleDateString('sv-SE').slice(0,7);
 let curYear = String(new Date().getFullYear());
@@ -933,16 +967,64 @@ function renderQuick(){
   $('quickBox').innerHTML = block('今天',todayList)+block('本周',weekList)+block('本年',yearList);
 }
 
+/* ---------- 流水搜索（跨全部月份） ---------- */
+let searchKw = '';
+
+/* 匹配备注 / 分类 / 账户名 / 金额 / 日期。用于"上次给车保养多少""去年买衣服一共多少"这类查账。 */
+function searchAll(kw){
+  const s = String(kw||'').trim().toLowerCase();
+  if(!s) return [];
+  return DB.transactions.filter(t=>{
+    const hay = [t.note, t.cat, t.accountName, t.toAccountName, t.amount, t.date].join(' ').toLowerCase();
+    return hay.includes(s);
+  }).sort((a,b)=> b.date.localeCompare(a.date) || b.ts - a.ts);
+}
+
+function bindSearch(){
+  const tg = $('searchToggle'), box = $('searchBox'), inp = $('searchInput'), title = $('homeTitle');
+  if(!tg || !box || !inp) return;
+  tg.onclick = ()=>{
+    const open = box.style.display === 'none';
+    box.style.display = open ? 'block' : 'none';
+    if(open){
+      inp.focus();
+    } else {
+      inp.value = ''; searchKw = '';
+      if(title) title.textContent = '本月流水';
+      renderHome();
+    }
+  };
+  inp.oninput = ()=>{
+    searchKw = inp.value.trim();
+    if(title) title.textContent = searchKw ? '搜索结果' : '本月流水';
+    renderHome();
+  };
+}
+
 function renderHome(){
-  const list = monthTx(curMonth);
+  /* 搜索模式只是换掉数据源，下面整套列表渲染（日期分组、条目样式）原样复用 */
+  const searching = !!searchKw;
+  const list = searching ? searchAll(searchKw) : monthTx(curMonth);
   const exp = sumBy(list,'expense'), inc = sumBy(list,'income');
+  /* 搜索时顶部统计的是"匹配结果的合计"，标签要跟着改 ——
+     否则会出现"写着本月支出、数字却是全部月份的"这种自相矛盾。 */
+  const pfx = searching ? '合计' : '本月';
+  const L1 = $('sumExpLabel'), L2 = $('sumIncLabel'), L3 = $('sumBalLabel');
+  if(L1) L1.textContent = pfx + '支出';
+  if(L2) L2.textContent = pfx + '收入';
+  if(L3) L3.textContent = pfx + '结余';
   $('sumExp').textContent = fmt(exp);
   $('sumInc').textContent = fmt(inc);
   $('sumBal').textContent = fmt(round2(inc-exp));
   $('homeCount').textContent = list.length + ' 笔';
 
   const box = $('homeList');
-  if(!list.length){ box.innerHTML = '<div class="empty">本月还没有记录<br>点右下角 + 记一笔</div>'; return; }
+  if(!list.length){
+    box.innerHTML = searching
+      ? '<div class="empty">没有匹配的记录<br>换个词试试</div>'
+      : '<div class="empty">本月还没有记录<br>点右下角 + 记一笔</div>';
+    return;
+  }
 
   let html='', lastDate='';
   list.forEach(t=>{
@@ -1658,12 +1740,15 @@ const CAT_RULES = {
     ['餐饮', ['吃饭','午饭','早饭','早餐','晚餐','夜宵','外卖','奶茶','咖啡','饮料','酸奶','牛奶','豆浆','茶叶','茶','餐厅','聚餐','食堂','快餐','零食','水果','饭','菜','肉','鱼','虾','汤','火锅','烧烤','麻辣烫','米线','面条','米粉','饺子','包子','馒头','粥','蛋糕','面包','饼干','薯片','瓜子','坚果','巧克力','糖果','冰淇淋','雪糕','月饼','粽子','汉堡','披萨','三明治','寿司','早点','午餐','下午茶','自助餐','小吃','泡面','方便面','鸡蛋','蔬菜','海鲜','啤酒','白酒','红酒','矿泉水','纯净水','豆制品']],
     ['交通', ['打车','滴滴','网约车','出租车','地铁','公交','高铁','火车','机票','车票','飞机','船票','轮渡','加油','油费','停车费','停车','过路费','高速费','车费','交通费','交通','汽车','电瓶车','电动车','摩托','单车','共享单车','共享汽车','充电桩','洗车','租车','代驾','违章','年检','轮胎','ETC']],
     ['居住', ['房租','租金','水电','物业费','物业','燃气费','燃气','电费','水费','取暖','暖气','装修','房贷','按揭','宽带费','家具','家电','冰箱','洗衣机','空调','电视','沙发','床垫','床','桌椅','书桌','衣柜','厨具','窗帘','灯具','热水器','油烟机','微波炉','电磁炉','饮水机','吸尘器','床上用品','被子','枕头','四件套','保洁','搬家','维修','家政','煤气','水龙头','水管']],
+    /* 宠物必须排在「医疗」之前：否则"宠物医院""狗疫苗""宠物保险"会被下面的医疗词抢走。
+       词表里刻意不放裸「猫」「狗」（会误伤猫眼电影、狗不理包子），只放带语境的说法。 */
+    ['宠物', ['宠物','猫咪','狗狗','小猫','小狗','养猫','养狗','遛狗','喂猫','喂狗','狗证','猫粮','狗粮','猫砂','狗绳','猫窝','狗窝','猫爬架','猫抓板','宠物粮','宠物食品','宠物零食','宠物用品','宠物玩具','宠物医院','宠物诊所','宠物医生','宠物疫苗','宠物保险','宠物美容','宠物洗澡','宠物寄养','宠物驱虫','驱虫','绝育']],
     ['医疗', ['医院','看病','买药','体检','挂号','医疗','门诊','牙科','住院','药','药店','疫苗','配镜','针灸','康复','保健品','维生素','感冒药','消炎药','输液','牙套','正畸','化验','手术','复诊','中药','西药','眼科','口腔','急诊','核磁','B超','胃镜','心电图','CT','ct']],
-    ['学习', ['买书','课程','学费','培训','学习','教育','文具','考试','报名费','书','教材','参考书','辅导书','习题','试卷','中性笔','铅笔','橡皮','尺子','文具盒','打印','复印','打印费','版面费','知网','查重','学术会议','注册费','网课','考研','四六级','词典','字典','书包','讲义','资料']],
+    ['学习', ['买书','课程','学费','培训','学习','教育','文具','考试','报名费','书','教材','参考书','辅导书','习题','试卷','中性笔','铅笔','橡皮','尺子','文具盒','打印','复印','打印费','版面费','知网','查重','学术会议','注册费','网课','考研','四六级','词典','字典','书包','讲义','资料','电脑','笔记本电脑','平板电脑','平板','键盘','鼠标','显示器','硬盘','U盘','移动硬盘','打印机','墨盒','扫描仪','扩展坞','内存条','显卡','Kindle','电子书','学习机']],
     ['服饰', ['衣服','裤子','买衣服','服饰','外套','裙子','帽子','鞋','T恤','衬衫','毛衣','羽绒服','大衣','卫衣','牛仔裤','内衣','内裤','袜子','围巾','手套','包包','背包','箱包','行李箱','首饰','眼镜','手表','皮带','腰带','运动鞋','皮鞋','拖鞋','凉鞋','靴子','睡衣','泳衣','墨镜']],
-    ['日用', ['日用品','纸巾','卫生纸','抽纸','洗发水','沐浴露','牙膏','牙刷','毛巾','香皂','肥皂','洗手液','洗衣液','洗衣粉','洗洁精','清洁用品','垃圾袋','保鲜膜','雨伞','水杯','杯子','保温杯','碗','盘子','筷子','勺子','锅','菜刀','砧板','拖把','扫把','抹布','衣架','电池','灯泡','台灯','插座','充电器','充电宝','充电线','数据线','手机壳','耳机','剃须刀','指甲刀','护手霜','面霜','洗面奶','化妆品','护肤品','湿巾','口罩','创可贴','卫生巾','日用']],
-    ['通讯', ['话费','流量','电话费','宽带','通讯','手机费','手机充值','套餐费','云存储','网盘','iCloud']],
-    ['娱乐', ['电影票','电影','游戏充值','游戏','唱歌','KTV','娱乐','旅游','度假','门票','演唱会','音乐会','话剧','展览','演出','健身','健身房','按摩','足疗','视频会员','会员','爱奇艺','腾讯视频','优酷','B站','哔哩哔哩','网易云','音乐会员','剧本杀','密室','桌游','露营','钓鱼','游泳','瑜伽','球','网吧','酒吧','K歌','滑雪','游乐场','动物园','水族馆','台球','卡丁车','射箭','攀岩']],
+    ['日用', ['日用品','纸巾','卫生纸','抽纸','洗发水','沐浴露','牙膏','牙刷','毛巾','香皂','肥皂','洗手液','洗衣液','洗衣粉','洗洁精','清洁用品','垃圾袋','保鲜膜','雨伞','水杯','杯子','保温杯','碗','盘子','筷子','勺子','锅','菜刀','砧板','拖把','扫把','抹布','衣架','电池','灯泡','台灯','插座','充电器','充电宝','充电线','数据线','手机壳','耳机','剃须刀','指甲刀','护手霜','面霜','洗面奶','化妆品','护肤品','湿巾','口罩','创可贴','卫生巾','理发','剪头发','剪发','理发店','美发','烫发','染发','洗剪吹','护发','自拍杆','手机支架','贴膜','钢化膜','转接头','移动电源','日用']],
+    ['通讯', ['话费','流量','电话费','宽带','通讯','手机费','手机充值','套餐费','云存储','网盘','iCloud','路由器','网线','光猫','无线网卡','宽带设备','流量包']],
+    ['娱乐', ['电影票','电影','游戏充值','游戏','唱歌','KTV','娱乐','旅游','度假','门票','演唱会','音乐会','话剧','展览','演出','健身','健身房','按摩','足疗','视频会员','会员','爱奇艺','腾讯视频','优酷','B站','哔哩哔哩','网易云','音乐会员','剧本杀','密室','桌游','露营','钓鱼','游泳','瑜伽','球','网吧','酒吧','K歌','滑雪','游乐场','动物园','水族馆','台球','卡丁车','射箭','攀岩','相机','单反','微单','镜头','游戏机','手柄','游戏手柄','麦克风','音箱','音响','投影仪','无人机']],
     // —— 行为/渠道，兜底：认不出对象才落到这里 ——
     ['购物', ['购物','买东西','买了','淘宝','京东','拼多多','天猫','唯品会','商城','下单','网购','代购','海淘','超市','快递','快递费','寄快递','邮费','运费']],
     ['其他', []]
@@ -1914,6 +1999,7 @@ function renderYear(){
   $('yYearLabel').textContent = curYear+'年';
   drawYearChart(list, Number(curYear));
   $('yBars').innerHTML = barList(list,'expense',exp,EXPENSE_CATS);
+  $('yIncomeBars').innerHTML = barList(list,'income',inc,INCOME_CATS);
 }
 
 function drawYearChart(list, year){
@@ -1957,11 +2043,73 @@ function drawYearChart(list, year){
 }
 
 /* ---------- 账户页 ---------- */
+/* 净资产走势：最近 12 个月，取每月最后一天的净资产连成折线。
+   月末取法 new Date(y, m, 0) —— JS 里"下个月的第 0 天"就是本月最后一天。 */
+function drawNetChart(){
+  const cv = $('chartNet'); if(!cv) return 0;
+  const rect = cv.parentElement.getBoundingClientRect();
+  const W = rect.width, H = rect.height;
+  if(!W || !H) return 0;
+  const dpr = window.devicePixelRatio||1;
+  cv.width = W*dpr; cv.height = H*dpr; cv.style.width=W+'px'; cv.style.height=H+'px';
+  const ctx = cv.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,W,H);
+
+  const [cy, cm] = curMonth.split('-').map(Number);
+  const end   = new Date(cy, cm - 1, 1);          // 本月 1 日
+  const start = new Date(cy, cm - 1, 1);
+  start.setMonth(start.getMonth() - 11);          // 默认往回看 11 个月
+  /* 账本还不满 12 个月时，从"最早一笔流水所在月"开始画 ——
+     否则前面那些没有数据的月份会连成一条毫无意义的平线。 */
+  if(DB.transactions.length){
+    const firstYM = DB.transactions.reduce((m,t)=> (t.date && t.date.slice(0,7) < m) ? t.date.slice(0,7) : m, '9999-12');
+    const [fy, fm] = firstYM.split('-').map(Number);
+    const firstD = new Date(fy, fm - 1, 1);
+    if(firstD > start) start.setTime(firstD.getTime());
+  }
+
+  const pts = [];
+  for(let d = new Date(start); d <= end; d.setMonth(d.getMonth() + 1)){
+    const eom = new Date(d.getFullYear(), d.getMonth() + 1, 0);   // 该月最后一天
+    const ds = `${eom.getFullYear()}-${String(eom.getMonth()+1).padStart(2,'0')}-${String(eom.getDate()).padStart(2,'0')}`;
+    pts.push({ label: (eom.getMonth()+1)+'月', v: netWorthAt(ds) });
+  }
+
+  const vals = pts.map(p=>p.v);
+  const max = Math.max(...vals), min = Math.min(...vals);
+  const span = Math.max(1, max - min);           // 波动很小时也不让曲线塌掉
+  const padL=46, padR=10, padT=12, padB=22;
+  const cw = W-padL-padR, ch = H-padT-padB;
+  const px = i => padL + (pts.length<=1 ? 0 : cw*i/(pts.length-1));
+  const py = v => padT + ch*(1 - (v-min)/span);
+
+  ctx.strokeStyle='#eceef2'; ctx.fillStyle='#8a909c'; ctx.font='10px sans-serif'; ctx.lineWidth=1;
+  ctx.textAlign='right';
+  for(let i=0;i<=3;i++){
+    const y = padT + ch*i/3;
+    ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke();
+    ctx.fillText(fmtNumShort(min + span*(1-i/3)), padL-5, y+3);
+  }
+
+  // 用中性蓝，不用红绿 —— 避免让人误以为是"涨了/跌了"
+  ctx.beginPath(); ctx.strokeStyle='#2f6bff'; ctx.lineWidth=2; ctx.lineJoin='round';
+  pts.forEach((p,i)=>{ const x=px(i), y=py(p.v); i ? ctx.lineTo(x,y) : ctx.moveTo(x,y); });
+  ctx.stroke();
+  ctx.fillStyle='#2f6bff';
+  pts.forEach((p,i)=>{ ctx.beginPath(); ctx.arc(px(i), py(p.v), 2.5, 0, Math.PI*2); ctx.fill(); });
+
+  ctx.fillStyle='#8a909c'; ctx.textAlign='center';
+  pts.forEach((p,i)=>{ if(i%2===0 || i===pts.length-1) ctx.fillText(p.label, px(i), H-6); });
+  return pts.length;
+}
+
 function renderAccount(){
   const nw = netWorth();
   $('totalAsset').textContent = fmt(nw.asset);
   $('totalDebt').textContent = fmt(nw.debt);
   $('netWorth').textContent = fmt(nw.net);
+  const nPts = drawNetChart();
+  const nr = $('netRange');
+  if(nr) nr.textContent = nPts ? ('近 ' + nPts + ' 个月') : '暂无数据';
 
   const box = $('acctList');
   let html = '';
@@ -2351,6 +2499,7 @@ async function renderAll(){
 }
 
 document.querySelectorAll('nav button').forEach(b=> b.onclick = ()=> goPage(b.dataset.page));
+bindSearch();
 $('fab').onclick = ()=> openAddSheet();
 $('mask').onclick = closeSheet;
 $('btnExport').onclick = exportBackup;
