@@ -124,6 +124,8 @@ nav button svg{width:22px;height:22px;}
   padding:10px 20px calc(14px + env(safe-area-inset-bottom));border-top:1px solid var(--line);
   margin-top:8px;z-index:6;}
 .sheet-foot .btn-main{width:100%;margin:0;}
+/* 识别结果摘要放进保存栏：紧贴保存键上方，手眼都在下半屏 */
+.sheet-foot .smart-result{margin:0 0 8px;}
 .sheet-head{display:flex;justify-content:space-between;align-items:center;padding:18px 20px 8px;
   position:sticky;top:0;background:#fff;z-index:8;}
 .sheet-head .title{font-size:16px;font-weight:600;}
@@ -1100,7 +1102,6 @@ function openAddSheet(prefill){
         <button class="smart-btn" id="smartBtn">识别</button>
       </div>
       <div class="smart-tip">用输入法语音或打字都行 · 收起键盘会自动识别</div>
-      <div class="smart-result" id="smartResult"></div>
     </div>
     <div class="seg" id="segType">
       <button data-type="expense" class="on">支出</button>
@@ -1111,6 +1112,10 @@ function openAddSheet(prefill){
   `, ()=>{
     renderAddFields(prefill);
     bindSmartInput();
+    // 打开即聚焦：键盘直接升起，手指不必先移到屏幕上方去点输入框。
+    // 识别结果摘要已挪到吸底的保存栏内（见 renderAddFields），所以手和眼都在下半屏。
+    const ta = $('smartText');
+    if(ta) { try{ ta.focus(); }catch(e){} }
     $('segType').onclick = e=>{
       const b = e.target.closest('button'); if(!b) return;
       curType = b.dataset.type;
@@ -1120,6 +1125,8 @@ function openAddSheet(prefill){
         const cats = curType==='expense' ? EXPENSE_CATS : INCOME_CATS;
         if(!curCat || !cats.find(c=>c.k===curCat)) curCat = curType==='expense' ? '其他' : '其他收入';
       }
+      // 用户手动改了，之前那条识别摘要就过期了 → 撤掉，避免"摘要说餐饮、表单选了收入"的矛盾
+      lastBarHTML = '';
       renderAddFields();
     };
   });
@@ -1141,8 +1148,9 @@ function renderAddFields(prefill){
         <input type="number" inputmode="decimal" id="inAmount" class="amount-input" style="color:var(--primary)" placeholder="0.00" value="${amountVal}"></div>
       <div class="field"><label>日期</label><input type="date" id="inDate" value="${dateVal}"></div>
       <div class="field"><label>备注（可选）</label><input type="text" id="inNote" placeholder="比如：还信用卡" value="${esc(noteVal)}"></div>
-      <div class="sheet-foot"><button class="btn-main" id="saveTx">保存转账</button></div>
+      <div class="sheet-foot"><div class="smart-result" id="smartResult"></div><button class="btn-main" id="saveTx">保存转账</button></div>
     `;
+    paintFootResult();
     $('saveTx').onclick = ()=>{
       const amt = parseFloat($('inAmount').value);
       if(!amt || amt<=0){ toast('请输入金额'); return; }
@@ -1189,10 +1197,13 @@ function renderAddFields(prefill){
       <select id="inAccount">${DB.accounts.map(a=>`<option value="${a.id}" ${p.acctId===a.id?'selected':''}>${esc(groupOf(a.group).name)} · ${esc(a.name)}</option>`).join('')}</select></div>
     <div class="field"><label>备注（可选）</label><input type="text" id="inNote" placeholder="比如：午饭" value="${esc(noteVal)}"></div>
     <div class="field"><label>日期</label><input type="date" id="inDate" value="${dateVal}"></div>
-    <div class="sheet-foot"><button class="btn-main" id="saveTx">保存</button></div>
+    <div class="sheet-foot"><div class="smart-result" id="smartResult"></div><button class="btn-main" id="saveTx">保存</button></div>
   `;
+  paintFootResult();
   $('catGrid').querySelectorAll('[data-cat]').forEach(el=>{
-    el.onclick = ()=>{ curCat = el.dataset.cat; $('catGrid').querySelectorAll('.c').forEach(x=>x.classList.toggle('on',x===el)); };
+    el.onclick = ()=>{ curCat = el.dataset.cat; $('catGrid').querySelectorAll('.c').forEach(x=>x.classList.toggle('on',x===el));
+      // 手动改分类后，识别摘要已过期 → 撤掉
+      lastBarHTML = ''; paintFootResult(); };
   });
   $('saveTx').onclick = ()=>{
     const amt = parseFloat($('inAmount').value);
@@ -1236,6 +1247,17 @@ function bindSmartInput(){
 
 /* 最近一次识别结果（供"类型待确认"按钮回调） */
 let lastSmart = null;
+/* 识别结果摘要的 HTML。
+   ★ 摘要显示在**吸底的保存栏内**（保存键正上方），不再放在顶部识别框下面 ——
+     这样识别完，"看结果"和"点保存"都在下半屏，手指和视线都不用再跑到屏幕上方。 */
+let lastBarHTML = '';
+
+/* 把摘要画进保存栏。renderAddFields 每次重建表单后都要调一次。 */
+function paintFootResult(){
+  const el = $('smartResult'); if(!el) return;
+  el.innerHTML = lastBarHTML;
+  el.classList.toggle('show', !!lastBarHTML);
+}
 
 /* 识别结果提示条的 HTML */
 function smartBarHTML(r){
@@ -1265,7 +1287,7 @@ function smartBarHTML(r){
 function handleSmartText(text){
   const r = parseVoice(text);
   lastSmart = { text, r };
-  const res = $('smartResult');
+  lastBarHTML = smartBarHTML(r);      // 摘要改由吸底的保存栏呈现
 
   curType = r.type;            // 转账就真的切到转账表单（旧版会强行改回"支出"）
   if(r.cat) curCat = r.cat;
@@ -1278,9 +1300,8 @@ function handleSmartText(text){
   };
   const seg = $('segType');
   if(seg){ seg.querySelectorAll('button').forEach(x=>x.classList.toggle('on', x.dataset.type===curType)); }
-  renderAddFields(prefill);
+  renderAddFields(prefill);           // 内部会调 paintFootResult()，把摘要画进保存栏
   if($('smartText')) $('smartText').value = keepText;
-  if(res){ res.innerHTML = smartBarHTML(r); res.classList.add('show'); }
   bindSmartInput();
   bindSmartAsk();
   if(r.amount==null) toast('没听清金额，请手动填写');
@@ -1301,12 +1322,10 @@ function bindSmartAsk(){
       if(seg) seg.querySelectorAll('button').forEach(x=>x.classList.toggle('on', x.dataset.type===t));
       const amt = $('inAmount') ? $('inAmount').value : '';
       const keepText = $('smartText') ? $('smartText').value : '';
+      // 先更新摘要内容，再重建表单（重建时会 paintFootResult 画出来）
+      if(lastSmart) lastBarHTML = smartBarHTML(Object.assign({}, lastSmart.r, {type:t, cat:curCat, ambiguous:false}));
       renderAddFields({ amount: amt, cat: curCat, acctId: lastSmart?lastSmart.r.acctId:null, date: today() });
       if($('smartText')) $('smartText').value = keepText;
-      if(res && lastSmart){
-        res.innerHTML = smartBarHTML(Object.assign({}, lastSmart.r, {type:t, cat:curCat, ambiguous:false}));
-        res.classList.add('show');
-      }
       bindSmartInput(); bindSmartAsk();
     };
   });
@@ -1556,19 +1575,32 @@ function extractAmount(t){
 }
 
 /* 分类词表：支出、收入分开，互不串味。改这里只需增项，不要改名。 */
+/* 分类词表（支出）—— ★ 顺序即优先级：**对象优先**
+   这套分类里混了两个维度：「购物」是行为/渠道，「服饰 / 日用 / 餐饮 / 医疗」是对象。
+   同一笔钱，「买衣服」归服饰、「淘宝买衣服」却归购物 —— 平台名把对象信息覆盖掉了。
+   所以匹配顺序改为：**对象类在前，行为类（购物）退到「其他」之前做兜底**。
+   只有在认不出"买的是什么"时，才落到「购物」。
+
+   补词原则（踩过坑）：
+     · 只补**具体名词**，不补动词、不补单字。
+     · 加词前先想「有没有常见词包含它」：
+       加裸『水』→「水费」会误入餐饮；加裸『酒』→「酒店」会误入餐饮；加裸『充电』→「充电器」会误入交通。
+     · 写错的代价比漏认大：漏认只是分类不准，误命中会把整类记错。 */
 const CAT_RULES = {
   expense: [
-    ['餐饮', ['吃饭','午饭','早饭','早餐','晚餐','夜宵','外卖','奶茶','咖啡','餐厅','聚餐','食堂','快餐','零食','水果','饭']],
-    ['交通', ['打车','滴滴','网约车','出租车','地铁','公交','高铁','火车','机票','车票','加油','油费','充电','充电桩','电瓶车','电动车','摩托','停车费','停车','过路费','高速费','洗车','共享单车','单车','车费','交通费','交通']],
-    ['购物', ['购物','买东西','淘宝','京东','拼多多','买了个','下单','网购','快递费']],
-    ['居住', ['房租','租金','水电','物业','燃气','电费','水费','取暖','装修','房贷','按揭','宽带费']],
-    ['娱乐', ['电影','游戏','唱歌','KTV','娱乐','旅游','门票','演唱会','健身','按摩','演出']],
-    ['医疗', ['医院','看病','买药','体检','挂号','医疗','门诊','牙科','住院','药']],
-    ['学习', ['买书','课程','学费','培训','学习','教育','文具','考试','报名费','书']],
-    ['人情', ['送礼','随礼','请客','人情','礼金','份子钱','红包']],
-    ['通讯', ['话费','流量','电话费','宽带','通讯','手机费','套餐费']],
-    ['服饰', ['衣服','裤子','买衣服','服饰','外套','裙子','帽子','鞋']],
-    ['日用', ['日用品','纸巾','洗发水','牙膏','超市','日用','洗衣液','清洁用品']],
+    // —— 有明确社交动机的说法，优先级最高（避免"请客吃饭"被拆成餐饮）——
+    ['人情', ['请客吃饭','请客','送礼','随礼','随份子','份子钱','礼金','礼物','礼品','贺礼','生日礼','伴手礼','探望','探病','慰问','孝敬','给爸妈','人情','红包']],
+    ['餐饮', ['吃饭','午饭','早饭','早餐','晚餐','夜宵','外卖','奶茶','咖啡','饮料','酸奶','牛奶','豆浆','茶叶','茶','餐厅','聚餐','食堂','快餐','零食','水果','饭','菜','肉','鱼','虾','汤','火锅','烧烤','麻辣烫','米线','面条','米粉','饺子','包子','馒头','粥','蛋糕','面包','饼干','薯片','瓜子','坚果','巧克力','糖果','冰淇淋','雪糕','月饼','粽子','汉堡','披萨','三明治','寿司','早点','午餐','下午茶','自助餐','小吃','泡面','方便面','鸡蛋','蔬菜','海鲜','啤酒','白酒','红酒','矿泉水','纯净水','豆制品']],
+    ['交通', ['打车','滴滴','网约车','出租车','地铁','公交','高铁','火车','机票','车票','飞机','船票','轮渡','加油','油费','停车费','停车','过路费','高速费','车费','交通费','交通','汽车','电瓶车','电动车','摩托','单车','共享单车','共享汽车','充电桩','洗车','租车','代驾','违章','年检','轮胎','ETC']],
+    ['居住', ['房租','租金','水电','物业费','物业','燃气费','燃气','电费','水费','取暖','暖气','装修','房贷','按揭','宽带费','家具','家电','冰箱','洗衣机','空调','电视','沙发','床垫','床','桌椅','书桌','衣柜','厨具','窗帘','灯具','热水器','油烟机','微波炉','电磁炉','饮水机','吸尘器','床上用品','被子','枕头','四件套','保洁','搬家','维修','家政','煤气','水龙头','水管']],
+    ['医疗', ['医院','看病','买药','体检','挂号','医疗','门诊','牙科','住院','药','药店','疫苗','配镜','针灸','康复','保健品','维生素','感冒药','消炎药','输液','牙套','正畸','化验','手术','复诊','中药','西药','眼科','口腔','急诊','核磁','B超','胃镜','心电图','CT','ct']],
+    ['学习', ['买书','课程','学费','培训','学习','教育','文具','考试','报名费','书','教材','参考书','辅导书','习题','试卷','中性笔','铅笔','橡皮','尺子','文具盒','打印','复印','打印费','版面费','知网','查重','学术会议','注册费','网课','考研','四六级','词典','字典','书包','讲义','资料']],
+    ['服饰', ['衣服','裤子','买衣服','服饰','外套','裙子','帽子','鞋','T恤','衬衫','毛衣','羽绒服','大衣','卫衣','牛仔裤','内衣','内裤','袜子','围巾','手套','包包','背包','箱包','行李箱','首饰','眼镜','手表','皮带','腰带','运动鞋','皮鞋','拖鞋','凉鞋','靴子','睡衣','泳衣','墨镜']],
+    ['日用', ['日用品','纸巾','卫生纸','抽纸','洗发水','沐浴露','牙膏','牙刷','毛巾','香皂','肥皂','洗手液','洗衣液','洗衣粉','洗洁精','清洁用品','垃圾袋','保鲜膜','雨伞','水杯','杯子','保温杯','碗','盘子','筷子','勺子','锅','菜刀','砧板','拖把','扫把','抹布','衣架','电池','灯泡','台灯','插座','充电器','充电宝','充电线','数据线','手机壳','耳机','剃须刀','指甲刀','护手霜','面霜','洗面奶','化妆品','护肤品','湿巾','口罩','创可贴','卫生巾','日用']],
+    ['通讯', ['话费','流量','电话费','宽带','通讯','手机费','手机充值','套餐费','云存储','网盘','iCloud']],
+    ['娱乐', ['电影票','电影','游戏充值','游戏','唱歌','KTV','娱乐','旅游','度假','门票','演唱会','音乐会','话剧','展览','演出','健身','健身房','按摩','足疗','视频会员','会员','爱奇艺','腾讯视频','优酷','B站','哔哩哔哩','网易云','音乐会员','剧本杀','密室','桌游','露营','钓鱼','游泳','瑜伽','球','网吧','酒吧','K歌','滑雪','游乐场','动物园','水族馆','台球','卡丁车','射箭','攀岩']],
+    // —— 行为/渠道，兜底：认不出对象才落到这里 ——
+    ['购物', ['购物','买东西','买了','淘宝','京东','拼多多','天猫','唯品会','商城','下单','网购','代购','海淘','超市','快递','快递费','寄快递','邮费','运费']],
     ['其他', []]
   ],
   income: [
@@ -1582,12 +1614,31 @@ const CAT_RULES = {
     ['其他收入', []]
   ]
 };
+/* 行为 / 渠道类的分类：只有在"认不出对象"时才轮到它们。
+   「购物」是渠道（淘宝/京东/下单），不是对象（袜子/酸奶/冰箱）。
+   不加这一层的话，"拼多多买袜子"会被'拼多多'抢成购物 ——
+   而用户要的是"这笔钱买了什么"。 */
+const BEHAVIOR_CATS = ['购物'];
+
+/* 分类匹配，两轮：
+     第 1 轮 —— 只看**对象类**，取命中的最长词（长度相同才按分类表先后）；
+     第 2 轮 —— 对象类全军覆没，才轮到**行为类**（购物）兜底。
+   为什么要"最长词优先"而不是"按分类顺序先命中先赢"：
+     短词会抢走整类 —— 餐饮里的『鱼』会把「钓鱼」抢成餐饮。
+   为什么还要分两轮：光靠长度也不行，「拼多多」(3字) 会压过「袜子」(2字)。 */
 function matchCat(clean, type){
   const rules = CAT_RULES[type] || CAT_RULES.expense;
-  for(const [cat, words] of rules){
-    if(words.some(w=>clean.includes(w))) return cat;
-  }
-  return type==='income' ? '其他收入' : '其他';
+  const scan = (behavior) => {
+    let best = null, bestLen = 0;
+    for(const [cat, words] of rules){
+      if(BEHAVIOR_CATS.includes(cat) !== behavior) continue;
+      for(const w of words){
+        if(w.length > bestLen && clean.includes(w)){ best = cat; bestLen = w.length; }
+      }
+    }
+    return best;
+  };
+  return scan(false) || scan(true) || (type==='income' ? '其他收入' : '其他');
 }
 
 /* 方向词 */
@@ -1595,10 +1646,14 @@ const INCOME_KW  = ['收到','收入','进账','到账','发了工资','工资',
 const EXPENSE_KW = ['花了','花掉','花销','买了','买了个','付了','交了','缴纳','交房租','交租金','付房租','付租金','支付','消费','支出','刷了','刷卡','充了'];
 /* 转账动作词。
    strong：本身就明确表示转账，见到即可判定。
-   weak：单个"转/还/汇"——中文里太常见（转机、还买了、汇报……），
-         所以只在"一句话里出现了至少两个账户"时才敢判定为转账。 */
-const TRAN_STRONG = /转账|转到|转给|转入|转出|还给|还款|充值|汇到|汇款|打款|存到|打钱|还款给/;
-const TRAN_WEAK   = /转|还|汇/;
+   weak：单个"转/还/汇/充"——中文里太常见（转机、还买了、汇报、充电、充值话费……），
+         所以只在有附加证据时才敢判定为转账：
+           ① 一句话里出现 ≥2 个账户（"建行转招行"），或
+           ② 有明确的"到某处"（"转5000到建行卡" / "充值到微信"）。
+   ★「充值」从 strong 降级到 weak：因为"话费充值""游戏充值"是支出，
+     以前会被整笔判成转账（连类型都变了）。现在只有"充值到XX"才算转账。 */
+const TRAN_STRONG = /转账|转到|转给|转入|转出|还给|还款|汇到|汇款|打款|存到|打钱|还款给/;
+const TRAN_WEAK   = /转|还|汇|充/;
 /* 双栖词：既可能是收进来也可能是付出去。没有方向词时问一句，不猜。 */
 const AMBIG_WORDS = ['房租','租金','押金','退款'];
 const FAIL_RE = /没报下来|报不下来|报不了|没批|报销失败|不给报|没给报/;
