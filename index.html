@@ -2126,6 +2126,8 @@ function acctIcon(name, neg){
   if(/支付宝|alipay/i.test(n)) return badge('支','#1677ff');
   if(/京东|白条/.test(n)) return badge('京','#e1251b');
   if(/平安|证券/.test(n)) return badge('平','#ee7d00');
+  /* 摩根大通 / 摩根资管 / JPMorgan —— 宋老师口径："摩根"即指这家 */
+  if(/摩根|JPM/i.test(n)) return badge('摩','#1a3a6b');
   if(/现金/.test(n)) return svg('#2e9e5b','<g fill="none" stroke="#fff" stroke-width="2"><rect x="3" y="6.5" width="18" height="11" rx="2"/><circle cx="12" cy="12" r="2.4"/></g>');
   if(/应收|报销|债权/.test(n)) return badge('应','#c98a00');
   if(/上海农商|农商|SRCB/i.test(n)) return badge('商','#0a8f4d');
